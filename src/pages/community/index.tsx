@@ -1,12 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import Layout from '@/components/Layout';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import ClayButton from '@/components/ClayButton';
-import { supabase } from '@/lib/supabase';
+import { supabase, withRequestTimeout } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import toast from 'react-hot-toast';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 import type { Community } from '@/types/database';
+
+// The shared Supabase schema currently lacks generated table definitions.
+const typedDb = supabase as unknown as SupabaseClient;
 
 export default function CommunityPage() {
   const { user, profile } = useAuthStore();
@@ -15,35 +19,46 @@ export default function CommunityPage() {
   const [newCommunity, setNewCommunity] = useState({ name: '', desc: '' });
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { if (user) loadMyCommunities(); }, [user]);
+  const loadMyCommunities = useCallback(async () => {
+    if (!user) {
+      setMyCommunities([]);
+      return;
+    }
 
-  const loadMyCommunities = async () => {
-    if (!user) return;
     try {
-      const { data: memberships } = await supabase.from('community_members').select('community_id').eq('user_id', user.id).eq('status', 'active');
-      const ids = memberships?.map(m => m.community_id) || [];
+      const { data: memberships, error: membershipError } = await withRequestTimeout(typedDb.from('community_members').select('community_id').eq('user_id', user.id).eq('status', 'active'), 15000, 'Community list timed out');
+      if (membershipError) throw membershipError;
+      const membershipRows = (memberships ?? []) as Array<{ community_id: string | null }>;
+      const ids = membershipRows.map((membership) => membership.community_id).filter((id): id is string => Boolean(id));
       if (ids.length === 0) { setMyCommunities([]); return; }
-      const { data } = await supabase.from('communities').select('*').in('id', ids);
-      setMyCommunities(data || []);
-    } catch (e) { console.error(e); }
-  };
+      const { data, error } = await withRequestTimeout(typedDb.from('communities').select('*').in('id', ids), 15000, 'Community details timed out');
+      if (error) throw error;
+      setMyCommunities((data || []) as Community[]);
+    } catch (error) {
+      console.warn('[SnackVerse communities]', error instanceof Error ? error.message : 'Could not load communities');
+      toast.error('Could not load communities. Check the Supabase database migration.');
+    }
+  }, [user]);
+
+  useEffect(() => { void loadMyCommunities(); }, [loadMyCommunities]);
 
   const joinWithCode = async () => {
     if (!inviteCode.trim() || !user) return;
     setLoading(true);
     try {
-      const { data: comm, error: fetchErr } = await supabase.from('communities').select('*').eq('invite_code', inviteCode.trim()).single();
+      const { data: comm, error: fetchErr } = await withRequestTimeout(typedDb.from('communities').select('*').eq('invite_code', inviteCode.trim()).single(), 12000, 'Invite code lookup timed out');
       if (fetchErr || !comm) throw new Error('Invalid invitation code');
       
-      const { data: exists } = await supabase.from('community_members').select('id').eq('community_id', comm.id).eq('user_id', user.id).single();
+      const { data: exists, error: existsError } = await withRequestTimeout(typedDb.from('community_members').select('id').eq('community_id', comm.id).eq('user_id', user.id).maybeSingle(), 12000, 'Membership check timed out');
+      if (existsError) throw existsError;
       if (exists) throw new Error('You are already a member');
 
-      const { error: insertErr } = await supabase.from('community_members').insert({ community_id: comm.id, user_id: user.id, role: 'member', status: 'active' });
+      const { error: insertErr } = await withRequestTimeout(typedDb.from('community_members').insert({ community_id: comm.id, user_id: user.id, role: 'member', status: 'active' }), 15000, 'Join request timed out');
       if (insertErr) throw insertErr;
       toast.success(`Joined ${comm.name}!`);
       setInviteCode('');
       await loadMyCommunities();
-    } catch (err: any) { toast.error(err.message); }
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Could not join this community.'); }
     finally { setLoading(false); }
   };
 
@@ -52,15 +67,17 @@ export default function CommunityPage() {
     setLoading(true);
     try {
       const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-      const { data: comm, error: createErr } = await supabase.from('communities').insert({
-        name: newCommunity.name, description: newCommunity.desc, creator_id: user.id, invite_code: code, requires_approval: false
-      }).select().single();
+      const { data: comm, error: createErr } = await withRequestTimeout(typedDb.from('communities').insert({
+        name: newCommunity.name.trim(), description: newCommunity.desc.trim() || null, icon_url: null, creator_id: user.id, invite_code: code, requires_approval: false
+      }).select().single(), 15000, 'Community creation timed out');
       if (createErr) throw createErr;
-      await supabase.from('community_members').insert({ community_id: comm.id, user_id: user.id, role: 'creator', status: 'active' });
+      if (!comm) throw new Error('Community creation did not return a community.');
+      const { error: membershipError } = await withRequestTimeout(typedDb.from('community_members').insert({ community_id: comm.id, user_id: user.id, role: 'creator', status: 'active' }), 15000, 'Community membership creation timed out');
+      if (membershipError) throw membershipError;
       toast.success('Community created! Share code:' + code);
       setNewCommunity({ name: '', desc: '' });
       await loadMyCommunities();
-    } catch (err: any) { toast.error(err.message); }
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Could not create this community.'); }
     finally { setLoading(false); }
   };
 

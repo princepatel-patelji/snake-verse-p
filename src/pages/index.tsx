@@ -2,7 +2,7 @@ import React from 'react';
 import Head from 'next/head';
 import Layout from '@/components/Layout';
 import ClayButton from '@/components/ClayButton';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 import Link from 'next/link';
 
 export default function Home() {

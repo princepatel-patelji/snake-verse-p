@@ -5,8 +5,15 @@ import { useAuthStore } from '@/stores/authStore';
 import '@/styles/globals.css';
 
 export default function App({ Component, pageProps }: AppProps) {
+  const initializeAuth = useAuthStore((state) => state.initializeAuth);
+
+  useEffect(() => initializeAuth(), [initializeAuth]);
+
   useEffect(() => {
-    void useAuthStore.getState().initializeAuth();
+    if (process.env.NODE_ENV !== 'production' || !('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('/sw.js').catch((error) => {
+      console.warn('[SnackVerse PWA] Service worker registration failed:', error instanceof Error ? error.message : 'Unknown error');
+    });
   }, []);
 
   return (
@@ -14,9 +21,7 @@ export default function App({ Component, pageProps }: AppProps) {
       <Component {...pageProps} />
       <Toaster
         position="top-center"
-        toastOptions={{
-          className: 'font-quicksand shadow-clay rounded-xl border-0',
-        }}
+        toastOptions={{ className: 'font-quicksand shadow-clay rounded-xl border-0' }}
       />
     </>
   );

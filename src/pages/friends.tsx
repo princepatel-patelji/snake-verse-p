@@ -1,84 +1,147 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import Layout from '@/components/Layout';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import ClayButton from '@/components/ClayButton';
-import { supabase } from '@/lib/supabase';
+import { supabase, withRequestTimeout } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import toast from 'react-hot-toast';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
+
+const typedDb = supabase as unknown as SupabaseClient;
+
+interface FriendRow {
+  id: string;
+  friend_id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
+interface RequestRow {
+  id: string;
+  from_id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+}
 
 export default function FriendsPage() {
-  const { user } = useAuthStore();
+  const user = useAuthStore((state) => state.user);
   const [search, setSearch] = useState('');
-  const [friends, setFriends] = useState<any[]>([]);
-  const [requests, setRequests] = useState<any[]>([]);
+  const [friends, setFriends] = useState<FriendRow[]>([]);
+  const [requests, setRequests] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
 
-  useEffect(() => { if (user) { loadFriends(); loadRequests(); } }, [user]);
+  const loadFriends = useCallback(async () => {
+    const { data, error } = await withRequestTimeout(typedDb.rpc('get_my_friends'), 15000, 'Friends request timed out');
+    if (error) throw error;
+    setFriends((data || []) as FriendRow[]);
+  }, []);
 
-  const loadFriends = async () => {
-    const { data } = await supabase.from('friendships').select(`*, profiles!friend_id(display_name, avatar_url)`).eq('user_id', user!.id).eq('status', 'accepted');
-    setFriends(data || []);
-  };
-  const loadRequests = async () => {
-    const { data } = await supabase.from('friend_requests').select(`*, profiles!from_id(display_name)`).eq('to_id', user!.id).eq('status', 'pending');
-    setRequests(data || []);
-  };
+  const loadRequests = useCallback(async () => {
+    const { data, error } = await withRequestTimeout(typedDb.rpc('get_pending_friend_requests'), 15000, 'Friend requests timed out');
+    if (error) throw error;
+    setRequests((data || []) as RequestRow[]);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    if (!user) return;
+    setPageLoading(true);
+    try {
+      await Promise.all([loadFriends(), loadRequests()]);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not load your friends. Apply the latest database migration.');
+    } finally {
+      setPageLoading(false);
+    }
+  }, [user, loadFriends, loadRequests]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
 
   const sendRequest = async () => {
-    if (!search.trim() || !user) return;
+    if (!search.trim() || !user || loading) return;
     setLoading(true);
     try {
-      const { data: target } = await supabase.from('profiles').select('id').ilike('username', search.trim()).single();
-      if (!target) throw new Error('User not found');
-      if (target.id === user.id) throw new Error('Cannot add yourself');
-      await supabase.from('friend_requests').insert({ from_id: user.id, to_id: target.id, status: 'pending' });
-      toast.success('Friend request sent!');
+      const { data: matches, error: searchError } = await withRequestTimeout(typedDb.rpc('find_profile_by_username', {
+        search_username: search.trim().toLowerCase(),
+      }), 12000, 'Player search timed out');
+      if (searchError) throw searchError;
+      const matchRows = (matches ?? []) as Array<{ id: string; username: string }>;
+      const target = matchRows[0];
+      if (!target) throw new Error('No player found with that username.');
+      if (target.id === user.id) throw new Error('You cannot add yourself as a friend.');
+
+      const { error: requestError } = await withRequestTimeout(typedDb.rpc('send_snackverse_friend_request', {
+        to_user_id: target.id,
+      }), 15000, 'Friend request timed out');
+      if (requestError) throw requestError;
+
+      toast.success(`Friend request sent to @${target.username}.`);
       setSearch('');
-    } catch (err: any) { toast.error(err.message); }
-    finally { setLoading(false); }
+      await loadRequests();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not send friend request.');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const acceptRequest = async (reqId: string, fromId: string) => {
-    await supabase.from('friend_requests').delete().eq('id', reqId);
-    await supabase.from('friendships').insert([{ user_id: user!.id, friend_id: fromId, status: 'accepted' }, { user_id: fromId, friend_id: user!.id, status: 'accepted' }]);
-    toast.success('Friend added!');
-    await loadRequests(); await loadFriends();
+  const acceptRequest = async (requestId: string) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const { error } = await withRequestTimeout(typedDb.rpc('accept_friend_request', { request_id: requestId }), 15000, 'Accept request timed out');
+      if (error) throw error;
+      toast.success('Friend request accepted!');
+      await refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not accept the friend request.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <ProtectedRoute>
       <Layout title="Friends">
-        <div className="max-w-3xl mx-auto py-6">
-          <h1 className="text-3xl font-poppins font-bold text-pv-plum mb-6">👥 Friends</h1>
+        <div className="mx-auto max-w-3xl py-6">
+          <h1 className="mb-6 text-3xl font-poppins font-bold text-pv-plum">👥 Friends</h1>
           <div className="glass-panel mb-8">
-            <div className="flex gap-3">
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by username" className="flex-1 px-3 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-pv-pink outline-none" />
-              <ClayButton variant="primary" onClick={sendRequest} loading={loading}>Add</ClayButton>
+            <h2 className="mb-3 text-xl font-bold text-pv-plum">Find a player</h2>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Enter exact username" className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 outline-none focus:ring-2 focus:ring-pv-pink" />
+              <ClayButton type="button" variant="primary" onClick={sendRequest} loading={loading} disabled={!search.trim() || loading}>Add friend</ClayButton>
             </div>
           </div>
 
           {requests.length > 0 && (
-            <div className="mb-8"><h2 className="text-xl font-bold text-pv-plum mb-3">Pending Requests</h2>
-              {requests.map(r => (
-                <div key={r.id} className="clay-card flex justify-between items-center mb-3">
-                  <span className="font-medium">{r.profiles?.display_name}</span>
-                  <ClayButton variant="secondary" size="sm" onClick={() => acceptRequest(r.id, r.from_id)}>Accept</ClayButton>
+            <div className="mb-8">
+              <h2 className="mb-3 text-xl font-bold text-pv-plum">Pending Requests</h2>
+              {requests.map((request) => (
+                <div key={request.id} className="clay-card mb-3 flex items-center justify-between gap-3">
+                  <div><p className="font-medium text-pv-plum">{request.display_name}</p><p className="text-xs text-gray-500">@{request.username}</p></div>
+                  <ClayButton type="button" variant="secondary" size="sm" onClick={() => acceptRequest(request.id)} loading={loading} disabled={loading}>Accept</ClayButton>
                 </div>
               ))}
             </div>
           )}
 
-          <h2 className="text-xl font-bold text-pv-plum mb-3">My Friends</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {friends.map(f => (
-              <motion.div key={f.id} whileHover={{ scale: 1.02 }} className="clay-card flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-pv-sky flex items-center justify-center text-lg">🧑</div>
-                <div><p className="font-semibold text-pv-plum">{f.profiles?.display_name}</p><p className="text-xs text-gray-500">@{f.profiles?.username}</p></div>
-              </motion.div>
-            ))}
-            {friends.length === 0 && <div className="col-span-2 text-center py-6 text-gray-500">No friends yet. Start adding people!</div>}
-          </div>
+          <h2 className="mb-3 text-xl font-bold text-pv-plum">My Friends</h2>
+          {pageLoading ? (
+            <div className="py-8 text-center text-pv-plum/70">Loading friends…</div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {friends.map((friend) => (
+                <motion.div key={friend.id} whileHover={{ scale: 1.02 }} className="clay-card flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-pv-sky text-lg">🧑</div>
+                  <div><p className="font-semibold text-pv-plum">{friend.display_name}</p><p className="text-xs text-gray-500">@{friend.username}</p></div>
+                </motion.div>
+              ))}
+              {friends.length === 0 && <div className="col-span-2 py-6 text-center text-gray-500">No friends yet. Search for a username to get started.</div>}
+            </div>
+          )}
         </div>
       </Layout>
     </ProtectedRoute>

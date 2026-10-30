@@ -1,14 +1,17 @@
 import React, { useState } from 'react';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import Layout from '@/components/Layout';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import ClayButton from '@/components/ClayButton';
 import FoodCard from '@/components/FoodCard';
 import { FOOD_CATALOG } from '@/lib/game-config';
 import { useAuthStore } from '@/stores/authStore';
-import { supabase } from '@/lib/supabase';
+import { supabase, withRequestTimeout } from '@/lib/supabase';
 import toast from 'react-hot-toast';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import type { FoodItem } from '@/types/database';
+
+const typedDb = supabase as unknown as SupabaseClient;
 
 export default function FoodPage() {
   const { profile, updateProfile } = useAuthStore();
@@ -19,15 +22,34 @@ export default function FoodPage() {
   const categories = ['All', ...Array.from(new Set(FOOD_CATALOG.map(f => f.category)))];
   const filtered = FOOD_CATALOG.filter(f => (filter === 'All' || f.category === filter) && f.name.toLowerCase().includes(search.toLowerCase()));
 
-  const addToPlate = () => { if (selected) setPlate([...plate, selected]); };
+  const addToPlate = () => { if (selected) { setPlate((items) => [...items, selected]); setSelected(null); } };
   
   const eatFood = async (food: FoodItem) => {
-    toast.success(`Yum! Ate ${food.name}`);
-    setPlate(plate.filter(f => f.id !== food.id));
-    if (profile) {
+    if (!profile) return;
+    try {
       const newCals = Math.max(0, (profile.virtual_calories || 0) + food.calories);
-      await updateProfile({ virtual_calories: newCals });
-      await supabase.from('game_sessions').insert({ user_id: profile.id, session_type: 'solo', total_calories_added: food.calories, total_calories_removed: 0, puzzles_attempted: 0, puzzles_correct: 0, xp_earned: 5 });
+      await updateProfile({
+        virtual_calories: newCals,
+        xp: (profile.xp || 0) + 5,
+        total_sessions: (profile.total_sessions || 0) + 1,
+      });
+      const { error } = await withRequestTimeout(typedDb.from('game_sessions').insert({
+        user_id: profile.id,
+        session_type: 'solo',
+        total_calories_added: food.calories,
+        total_calories_removed: 0,
+        puzzles_attempted: 0,
+        puzzles_correct: 0,
+        xp_earned: 5,
+      }), 15000, 'Snack session save timed out');
+      if (error) throw error;
+      setPlate((items) => {
+        const index = items.findIndex((item) => item.id === food.id);
+        return index < 0 ? items : items.filter((_, itemIndex) => itemIndex !== index);
+      });
+      toast.success(`Yum! Ate ${food.name}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not save this snack session.');
     }
   };
 

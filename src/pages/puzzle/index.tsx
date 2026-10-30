@@ -1,13 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import Layout from '@/components/Layout';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import ClayButton from '@/components/ClayButton';
 import { PUZZLE_BANK, GAME_RULES } from '@/lib/game-config';
 import { useAuthStore } from '@/stores/authStore';
-import { supabase } from '@/lib/supabase';
+import { supabase, withRequestTimeout } from '@/lib/supabase';
 import toast from 'react-hot-toast';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import type { PuzzleQuestion } from '@/types/database';
+
+const typedDb = supabase as unknown as SupabaseClient;
 
 export default function PuzzlePage() {
   const { profile, updateProfile } = useAuthStore();
@@ -19,14 +22,16 @@ export default function PuzzlePage() {
   const [score, setScore] = useState(0);
   const [xp, setXp] = useState(0);
   const [qIndex, setQIndex] = useState(0);
+  const [correctCount, setCorrectCount] = useState(0);
 
-  const shuffled = [...PUZZLE_BANK].sort(() => Math.random() - 0.5);
+  // Keep this array stable; rebuilding it on every render caused an effect loop.
+  const shuffled = useMemo(() => [...PUZZLE_BANK].sort(() => Math.random() - 0.5), []);
 
   useEffect(() => {
     if (qIndex < shuffled.length) {
       setCurrentQ(shuffled[qIndex]);
       setOptions([...shuffled[qIndex].options].sort(() => Math.random() - 0.5));
-      setSelected(null); setShowResult(false);
+      setSelected(null); setShowResult(false); setIsCorrect(false);
     }
   }, [qIndex, shuffled]);
 
@@ -39,19 +44,20 @@ export default function PuzzlePage() {
     if (correct) {
       setScore(s => s + currentQ.calorie_reward);
       setXp(x => x + currentQ.xp_reward);
+      setCorrectCount((count) => count + 1);
       toast.success('Correct! Brain power activated! 🧠');
     } else {
       toast.error(`Oops! The answer was: ${currentQ.correct_answer}`);
     }
 
     if (profile) {
-      await supabase.from('puzzle_attempts').insert({
+      await withRequestTimeout(typedDb.from('puzzle_attempts').insert({
         user_id: profile.id,
         question_id: currentQ.id,
         selected_answer: selected,
         is_correct: correct,
         xp_earned: correct ? currentQ.xp_reward : 0
-      });
+      }), 15000, 'Puzzle attempt save timed out');
     }
   };
 
@@ -61,19 +67,20 @@ export default function PuzzlePage() {
       if (profile) {
         const newCals = Math.max(0, (profile.virtual_calories || 0) - score);
         const newXp = (profile.xp || 0) + xp;
-        await updateProfile({ 
-          virtual_calories: newCals, 
-          xp: newXp, 
-          total_puzzles_solved: (profile.total_puzzles_solved || 0) + shuffled.length 
+        await updateProfile({
+          virtual_calories: newCals,
+          xp: newXp,
+          total_puzzles_solved: (profile.total_puzzles_solved || 0) + correctCount,
+          total_sessions: (profile.total_sessions || 0) + 1,
         });
-        await supabase.from('game_sessions').insert({
+        await withRequestTimeout(typedDb.from('game_sessions').insert({
           user_id: profile.id, session_type: 'solo', total_calories_added: 0,
           total_calories_removed: score, puzzles_attempted: shuffled.length,
-          puzzles_correct: score > 0 ? Math.round(score / 25) : 0, xp_earned: xp
-        });
+          puzzles_correct: correctCount, xp_earned: xp
+        }), 15000, 'Puzzle session save timed out');
       }
       toast.success(`Session Complete! Earned ${xp} XP & burned ${score} virtual calories! 🎉`);
-      setQIndex(0); setScore(0); setXp(0);
+      setQIndex(0); setScore(0); setXp(0); setCorrectCount(0);
     } else {
       setQIndex(q => q + 1);
     }
@@ -116,7 +123,7 @@ export default function PuzzlePage() {
                 )}
 
                 <div className="flex justify-between">
-                  <ClayButton variant="ghost" onClick={() => { setQIndex(0); setScore(0); setXp(0); }}>Reset</ClayButton>
+                  <ClayButton variant="ghost" onClick={() => { setQIndex(0); setScore(0); setXp(0); setCorrectCount(0); }}>Reset</ClayButton>
                   <ClayButton variant="primary" onClick={showResult ? nextQuestion : handleAnswer} disabled={!selected && !showResult}>
                     {showResult ? (qIndex + 1 >= shuffled.length ? 'Finish Session' : 'Next Question') : 'Submit Answer'}
                   </ClayButton>

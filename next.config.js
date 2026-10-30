@@ -2,12 +2,18 @@
 const nextConfig = {
   reactStrictMode: true,
   typescript: {
-    // Vercel build ke waqt TypeScript errors ko ignore karega taaki build fail na ho
     ignoreBuildErrors: true,
   },
   eslint: {
-    // Vercel build ke waqt ESLint warnings/errors ko ignore karega
     ignoreDuringBuilds: true,
+  },
+  async rewrites() {
+    return [
+      {
+        source: '/supabase-proxy/:path*',
+        destination: 'https://onwqcyqpmeruzbtfakzy.supabase.co/:path*',
+      },
+    ];
   },
 };
 

@@ -145,6 +145,7 @@ export function formatSupabaseAuthError(err: unknown): FormattedAuthError {
       userMessage: 'Cannot reach Supabase. Check the Supabase project URL, project status, browser Network tab and internet connection.',
     };
   }
+  export const formatSupabaseError = formatSupabaseAuthError;
 
   return { code: code || 'auth_error', userMessage: message || 'Authentication failed. Please try again.' };
 }

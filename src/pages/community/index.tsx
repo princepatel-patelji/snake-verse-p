@@ -1,125 +1,572 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import React, { useEffect, useState, useCallback } from 'react';
 import Layout from '@/components/Layout';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import ClayButton from '@/components/ClayButton';
-import { supabase, withRequestTimeout } from '@/lib/supabase';
+import { supabase, formatSupabaseError } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import toast from 'react-hot-toast';
-import { motion } from 'motion/react';
-import type { Community } from '@/types/database';
 
-// The shared Supabase schema currently lacks generated table definitions.
-const typedDb = supabase as unknown as SupabaseClient;
+interface CommunityItem {
+  id: string;
+  name: string;
+  description: string | null;
+  invite_code?: string | null;
+  code?: string | null;
+  icon?: string | null;
+  creator_id?: string | null;
+  member_count?: number;
+  created_at?: string;
+}
 
-export default function CommunityPage() {
-  const { user, profile } = useAuthStore();
-  const [myCommunities, setMyCommunities] = useState<Community[]>([]);
-  const [inviteCode, setInviteCode] = useState('');
-  const [newCommunity, setNewCommunity] = useState({ name: '', desc: '' });
-  const [loading, setLoading] = useState(false);
+interface MemberStat {
+  user_id: string;
+  role: string;
+  joined_at: string;
+  username: string;
+  display_name: string;
+  level: number;
+  xp: number;
+  bio: string | null;
+  total_seconds: number;
+  games_played: number;
+  top_score: number;
+}
 
-  const loadMyCommunities = useCallback(async () => {
-    if (!user) {
-      setMyCommunities([]);
-      return;
-    }
+function formatDuration(seconds: number): string {
+  if (!seconds || seconds <= 0) return '0m';
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hrs > 0) return `${hrs}h ${mins}m`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+}
 
+export default function CommunitiesPage() {
+  const user = useAuthStore((s) => s.user);
+  const [communities, setCommunities] = useState<CommunityItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Forms
+  const [inviteCodeInput, setInviteCodeInput] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [joining, setJoining] = useState(false);
+
+  // Selected Community Modal / Detail View
+  const [selectedCommunity, setSelectedCommunity] = useState<CommunityItem | null>(null);
+  const [members, setMembers] = useState<MemberStat[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [selectedMember, setSelectedMember] = useState<MemberStat | null>(null);
+
+  const loadCommunities = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
     try {
-      const { data: memberships, error: membershipError } = await withRequestTimeout(typedDb.from('community_members').select('community_id').eq('user_id', user.id).eq('status', 'active'), 15000, 'Community list timed out');
-      if (membershipError) throw membershipError;
-      const membershipRows = (memberships ?? []) as Array<{ community_id: string | null }>;
-      const ids = membershipRows.map((membership) => membership.community_id).filter((id): id is string => Boolean(id));
-      if (ids.length === 0) { setMyCommunities([]); return; }
-      const { data, error } = await withRequestTimeout(typedDb.from('communities').select('*').in('id', ids), 15000, 'Community details timed out');
-      if (error) throw error;
-      setMyCommunities((data || []) as Community[]);
-    } catch (error) {
-      console.warn('[SnackVerse communities]', error instanceof Error ? error.message : 'Could not load communities');
-      toast.error('Could not load communities. Check the Supabase database migration.');
+      const { data: memberships, error: memErr } = await supabase
+        .from('community_members')
+        .select('community_id')
+        .eq('user_id', user.id);
+
+      if (memErr) throw memErr;
+
+      const ids = (memberships || []).map((m: { community_id: string }) => m.community_id);
+
+      if (ids.length === 0) {
+        setCommunities([]);
+        return;
+      }
+
+      const { data: commData, error: commErr } = await supabase
+        .from('communities')
+        .select('*')
+        .in('id', ids)
+        .order('created_at', { ascending: false });
+
+      if (commErr) throw commErr;
+      setCommunities((commData as CommunityItem[]) || []);
+    } catch (err) {
+      toast.error(formatSupabaseError(err));
+    } finally {
+      setLoading(false);
     }
   }, [user]);
 
-  useEffect(() => { void loadMyCommunities(); }, [loadMyCommunities]);
+  useEffect(() => {
+    void loadCommunities();
+  }, [loadCommunities]);
 
-  const joinWithCode = async () => {
-    if (!inviteCode.trim() || !user) return;
-    setLoading(true);
+  const openCommunityDetails = async (comm: CommunityItem) => {
+    setSelectedCommunity(comm);
+    setSelectedMember(null);
+    setLoadingMembers(true);
     try {
-      const { data: comm, error: fetchErr } = await withRequestTimeout(typedDb.from('communities').select('*').eq('invite_code', inviteCode.trim()).single(), 12000, 'Invite code lookup timed out');
-      if (fetchErr || !comm) throw new Error('Invalid invitation code');
-      
-      const { data: exists, error: existsError } = await withRequestTimeout(typedDb.from('community_members').select('id').eq('community_id', comm.id).eq('user_id', user.id).maybeSingle(), 12000, 'Membership check timed out');
-      if (existsError) throw existsError;
-      if (exists) throw new Error('You are already a member');
+      // 1. Fetch community members
+      const { data: memRows, error: memErr } = await supabase
+        .from('community_members')
+        .select('user_id, role, joined_at')
+        .eq('community_id', comm.id);
 
-      const { error: insertErr } = await withRequestTimeout(typedDb.from('community_members').insert({ community_id: comm.id, user_id: user.id, role: 'member', status: 'active' }), 15000, 'Join request timed out');
-      if (insertErr) throw insertErr;
-      toast.success(`Joined ${comm.name}!`);
-      setInviteCode('');
-      await loadMyCommunities();
-    } catch (error) { toast.error(error instanceof Error ? error.message : 'Could not join this community.'); }
-    finally { setLoading(false); }
+      if (memErr) throw memErr;
+
+      const userIds = (memRows || []).map((r: { user_id: string }) => r.user_id);
+      if (userIds.length === 0) {
+        setMembers([]);
+        return;
+      }
+
+      // 2. Fetch profiles for all members
+      const { data: profRows } = await supabase
+        .from('profiles')
+        .select('*')
+        .in('id', userIds);
+
+      // 3. Fetch game sessions for time spent & games played
+      const { data: sessionRows } = await supabase
+        .from('game_sessions')
+        .select('user_id, duration_seconds, score, xp_earned')
+        .in('user_id', userIds);
+
+      const profileMap = new Map<string, Record<string, unknown>>();
+      (profRows || []).forEach((p: Record<string, unknown>) => {
+        profileMap.set(String(p.id), p);
+      });
+
+      const statsMap = new Map<
+        string,
+        { total_seconds: number; games_played: number; top_score: number; session_xp: number }
+      >();
+
+      (sessionRows || []).forEach((s: Record<string, unknown>) => {
+        const uid = String(s.user_id);
+        const cur = statsMap.get(uid) || {
+          total_seconds: 0,
+          games_played: 0,
+          top_score: 0,
+          session_xp: 0,
+        };
+        cur.total_seconds += Number(s.duration_seconds || 0);
+        cur.games_played += 1;
+        cur.top_score = Math.max(cur.top_score, Number(s.score || 0));
+        cur.session_xp += Number(s.xp_earned || 0);
+        statsMap.set(uid, cur);
+      });
+
+      const combined: MemberStat[] = (memRows || []).map(
+        (m: { user_id: string; role: string; joined_at: string }) => {
+          const p = profileMap.get(m.user_id) || {};
+          const st = statsMap.get(m.user_id) || {
+            total_seconds: 0,
+            games_played: 0,
+            top_score: 0,
+            session_xp: 0,
+          };
+          const rawXp = Number(p.xp_points ?? p.xp ?? st.session_xp ?? 0);
+          const rawLevel = Number(p.level ?? Math.max(1, Math.floor(rawXp / 100) + 1));
+
+          return {
+            user_id: m.user_id,
+            role: m.role || 'member',
+            joined_at: m.joined_at,
+            username: String(p.username || 'player'),
+            display_name: String(p.display_name || p.username || 'SnackVerse Player'),
+            level: rawLevel,
+            xp: rawXp,
+            bio: (p.bio as string) || 'Eating, Playing & Puzzling in SnackVerse!',
+            total_seconds: st.total_seconds,
+            games_played: st.games_played,
+            top_score: st.top_score,
+          };
+        }
+      );
+
+      // Sort by XP descending for leaderboard
+      combined.sort((a, b) => b.xp - a.xp);
+      setMembers(combined);
+    } catch (err) {
+      toast.error(formatSupabaseError(err));
+    } finally {
+      setLoadingMembers(false);
+    }
   };
 
-  const createCommunity = async () => {
-    if (!newCommunity.name.trim() || !user) return;
-    setLoading(true);
+  const handleCreateCommunity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || creating) return;
+    const cleanName = newName.trim();
+    if (cleanName.length < 2) {
+      toast.error('Please enter a community name (at least 2 characters).');
+      return;
+    }
+
+    setCreating(true);
     try {
-      const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-      const { data: comm, error: createErr } = await withRequestTimeout(typedDb.from('communities').insert({
-        name: newCommunity.name.trim(), description: newCommunity.desc.trim() || null, icon_url: null, creator_id: user.id, invite_code: code, requires_approval: false
-      }).select().single(), 15000, 'Community creation timed out');
+      const generatedCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+
+      const { data: created, error: createErr } = await supabase
+        .from('communities')
+        .insert({
+          name: cleanName,
+          description: newDesc.trim() || null,
+          invite_code: generatedCode,
+          creator_id: user.id,
+          member_count: 1,
+        } as never)
+        .select('*')
+        .single();
+
       if (createErr) throw createErr;
-      if (!comm) throw new Error('Community creation did not return a community.');
-      const { error: membershipError } = await withRequestTimeout(typedDb.from('community_members').insert({ community_id: comm.id, user_id: user.id, role: 'creator', status: 'active' }), 15000, 'Community membership creation timed out');
-      if (membershipError) throw membershipError;
-      toast.success('Community created! Share code:' + code);
-      setNewCommunity({ name: '', desc: '' });
-      await loadMyCommunities();
-    } catch (error) { toast.error(error instanceof Error ? error.message : 'Could not create this community.'); }
-    finally { setLoading(false); }
+
+      const comm = created as CommunityItem;
+
+      await supabase.from('community_members').upsert(
+        {
+          community_id: comm.id,
+          user_id: user.id,
+          role: 'admin',
+        } as never,
+        { onConflict: 'community_id,user_id' }
+      );
+
+      toast.success(`Community "${cleanName}" created!`);
+      setNewName('');
+      setNewDesc('');
+      await loadCommunities();
+      await openCommunityDetails(comm);
+    } catch (err) {
+      toast.error(formatSupabaseError(err));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleJoinWithCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || joining) return;
+    const code = inviteCodeInput.trim().toUpperCase();
+    if (!code) {
+      toast.error('Please enter an invite code.');
+      return;
+    }
+
+    setJoining(true);
+    try {
+      const { data: found, error: findErr } = await supabase
+        .from('communities')
+        .select('*')
+        .ilike('invite_code', code)
+        .maybeSingle();
+
+      if (findErr) throw findErr;
+      if (!found) {
+        toast.error('No community found with that invite code.');
+        return;
+      }
+
+      const comm = found as CommunityItem;
+
+      const { error: joinErr } = await supabase.from('community_members').upsert(
+        {
+          community_id: comm.id,
+          user_id: user.id,
+          role: 'member',
+        } as never,
+        { onConflict: 'community_id,user_id' }
+      );
+
+      if (joinErr) throw joinErr;
+
+      toast.success(`Joined ${comm.name}! 🎉`);
+      setInviteCodeInput('');
+      await loadCommunities();
+      await openCommunityDetails(comm);
+    } catch (err) {
+      toast.error(formatSupabaseError(err));
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  const copyInviteCode = (code: string) => {
+    void navigator.clipboard.writeText(code);
+    toast.success(`Invite code ${code} copied!`);
   };
 
   return (
     <ProtectedRoute>
-      <Layout title="Communities">
-        <div className="max-w-4xl mx-auto py-6">
-          <h1 className="text-3xl font-poppins font-bold text-pv-plum mb-6">🏛️ Communities</h1>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            <div className="glass-panel">
-              <h2 className="text-xl font-bold text-pv-plum mb-3">Join with Code</h2>
-              <div className="flex gap-3">
-                <input value={inviteCode} onChange={e => setInviteCode(e.target.value)} placeholder="Enter invite code" className="flex-1 px-3 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-pv-pink outline-none" />
-                <ClayButton variant="primary" onClick={joinWithCode} loading={loading}>Join</ClayButton>
-              </div>
+      <Layout title="Communities | Prince's SnackVerse">
+        <div className="max-w-5xl mx-auto px-4 py-8 space-y-8">
+          <div className="flex items-center justify-between">
+            <h1 className="text-3xl font-extrabold text-purple-900 flex items-center gap-3">
+              <span>🏛️</span> Communities
+            </h1>
+          </div>
+
+          {/* Join & Create Forms */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="clay-card p-6">
+              <h2 className="text-xl font-bold text-purple-900 mb-4">Join with Code</h2>
+              <form onSubmit={handleJoinWithCode} className="flex gap-3">
+                <input
+                  type="text"
+                  placeholder="Enter invite code (e.g. AB12CD)"
+                  className="flex-1 p-3 rounded-xl border border-purple-100 bg-white/90 focus:outline-none focus:ring-2 focus:ring-amber-400 uppercase"
+                  value={inviteCodeInput}
+                  onChange={(e) => setInviteCodeInput(e.target.value)}
+                />
+                <ClayButton type="submit" variant="primary" loading={joining}>
+                  Join
+                </ClayButton>
+              </form>
             </div>
-            <div className="glass-panel">
-              <h2 className="text-xl font-bold text-pv-plum mb-3">Create Community</h2>
-              <input value={newCommunity.name} onChange={e => setNewCommunity({...newCommunity, name: e.target.value})} placeholder="Community Name" className="w-full px-3 py-2 rounded-lg border border-gray-200 mb-2 focus:ring-2 focus:ring-pv-pink outline-none" />
-              <input value={newCommunity.desc} onChange={e => setNewCommunity({...newCommunity, desc: e.target.value})} placeholder="Description (optional)" className="w-full px-3 py-2 rounded-lg border border-gray-200 mb-3 focus:ring-2 focus:ring-pv-pink outline-none" />
-              <ClayButton variant="secondary" onClick={createCommunity} loading={loading} className="w-full">Create</ClayButton>
+
+            <div className="clay-card p-6">
+              <h2 className="text-xl font-bold text-purple-900 mb-4">Create Community</h2>
+              <form onSubmit={handleCreateCommunity} className="space-y-3">
+                <input
+                  type="text"
+                  placeholder="Community Name"
+                  required
+                  className="w-full p-3 rounded-xl border border-purple-100 bg-white/90 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                />
+                <input
+                  type="text"
+                  placeholder="Description (optional)"
+                  className="w-full p-3 rounded-xl border border-purple-100 bg-white/90 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  value={newDesc}
+                  onChange={(e) => setNewDesc(e.target.value)}
+                />
+                <ClayButton type="submit" variant="success" loading={creating} className="w-full">
+                  Create
+                </ClayButton>
+              </form>
             </div>
           </div>
 
-          <h2 className="text-2xl font-bold text-pv-plum mb-4">My Communities</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {myCommunities.map(c => (
-              <motion.div key={c.id} whileHover={{ scale: 1.02 }} className="clay-card">
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="w-10 h-10 rounded-full bg-pv-peach flex items-center justify-center text-xl">🏰</div>
-                  <div><h3 className="font-bold text-pv-plum">{c.name}</h3><p className="text-xs text-gray-500">Code: {c.invite_code}</p></div>
-                </div>
-                <p className="text-sm text-gray-600 line-clamp-2">{c.description || 'No description.'}</p>
-                <div className="mt-3 pt-3 border-t border-gray-100 flex justify-between items-center">
-                  <span className="text-xs text-gray-500">Created by Member</span>
-                  <ClayButton variant="ghost" size="sm">Open</ClayButton>
-                </div>
-              </motion.div>
-            ))}
-            {myCommunities.length === 0 && <div className="col-span-2 text-center py-8 text-gray-500">You haven't joined any communities yet.</div>}
+          {/* My Communities List */}
+          <div className="space-y-4">
+            <h2 className="text-2xl font-bold text-purple-900">
+              My Communities{' '}
+              <span className="text-sm font-normal text-slate-500">
+                (Click any community card to view members, leaderboard & time spent)
+              </span>
+            </h2>
+
+            {loading ? (
+              <div className="clay-card p-8 text-center text-slate-500">
+                Loading communities...
+              </div>
+            ) : communities.length === 0 ? (
+              <div className="clay-card p-8 text-center text-slate-500">
+                You haven&apos;t joined any communities yet. Create one or join with a code above!
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {communities.map((comm) => {
+                  const code = comm.invite_code || comm.code || 'SNACK1';
+                  const isSelected = selectedCommunity?.id === comm.id;
+
+                  return (
+                    <div
+                      key={comm.id}
+                      onClick={() => void openCommunityDetails(comm)}
+                      className={`clay-card p-6 cursor-pointer transition-all hover:scale-[1.01] border-2 ${
+                        isSelected
+                          ? 'border-amber-500 ring-2 ring-amber-300'
+                          : 'border-transparent hover:border-purple-200'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <h3 className="text-xl font-extrabold text-purple-900 flex items-center gap-2">
+                            <span>{comm.icon || '🏛️'}</span> {comm.name}
+                          </h3>
+                          <p className="text-sm text-slate-600 mt-1">
+                            {comm.description || 'SnackVerse Gaming Community'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            copyInviteCode(code);
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-bold transition"
+                          title="Click to copy invite code"
+                        >
+                          Code: {code} 📋
+                        </button>
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-purple-100 flex items-center justify-between text-xs font-semibold text-purple-800">
+                        <span>Click to open Leaderboard & Member Stats →</span>
+                        <span className="px-2.5 py-1 rounded-full bg-purple-100 text-purple-900">
+                          Open Hub
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
+
+          {/* Interactive Community Hub & Leaderboard Panel */}
+          {selectedCommunity && (
+            <div className="clay-card p-6 md:p-8 border-2 border-amber-400 space-y-6 animate-fadeIn">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-purple-100 pb-4">
+                <div>
+                  <span className="text-xs font-bold uppercase tracking-wider text-amber-600">
+                    Community Hub & Leaderboard
+                  </span>
+                  <h2 className="text-2xl md:text-3xl font-black text-purple-900 mt-1">
+                    {selectedCommunity.icon || '🏛️'} {selectedCommunity.name}
+                  </h2>
+                  <p className="text-sm text-slate-600">
+                    {selectedCommunity.description || 'Compete with members and climb the ranks!'}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <ClayButton
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      copyInviteCode(
+                        selectedCommunity.invite_code || selectedCommunity.code || 'SNACK1'
+                      )
+                    }
+                  >
+                    Copy Code: {selectedCommunity.invite_code || selectedCommunity.code || 'SNACK1'} 📋
+                  </ClayButton>
+                  <ClayButton
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedCommunity(null);
+                      setSelectedMember(null);
+                    }}
+                  >
+                    Close ✕
+                  </ClayButton>
+                </div>
+              </div>
+
+              {loadingMembers ? (
+                <p className="text-center py-6 text-slate-500">
+                  Loading community members and game stats...
+                </p>
+              ) : members.length === 0 ? (
+                <p className="text-center py-6 text-slate-500">No members found.</p>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold text-slate-500 uppercase">
+                    Members ({members.length}) — Click any player to inspect their full stats
+                  </p>
+                  {members.map((m, idx) => (
+                    <div
+                      key={m.user_id}
+                      onClick={() => setSelectedMember(m)}
+                      className="p-4 rounded-2xl bg-white/80 hover:bg-white border border-purple-100 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 text-white font-black flex items-center justify-center shadow">
+                          #{idx + 1}
+                        </div>
+                        <div>
+                          <p className="font-bold text-purple-900 flex items-center gap-2">
+                            {m.display_name}
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 font-semibold">
+                              @{m.username}
+                            </span>
+                            {m.role === 'admin' && (
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold">
+                                👑 Admin
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-slate-500 mt-0.5">{m.bio}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-4 text-center self-stretch sm:self-auto justify-around bg-purple-50/60 px-4 py-2 rounded-xl">
+                        <div>
+                          <p className="text-[10px] uppercase font-bold text-slate-500">Level</p>
+                          <p className="text-sm font-black text-purple-900">Lv. {m.level}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase font-bold text-slate-500">Total XP</p>
+                          <p className="text-sm font-black text-amber-600">{m.xp} XP</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase font-bold text-slate-500">
+                            Time Spent
+                          </p>
+                          <p className="text-sm font-black text-emerald-600">
+                            ⏱️ {formatDuration(m.total_seconds)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase font-bold text-slate-500">Games</p>
+                          <p className="text-sm font-black text-indigo-600">{m.games_played}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Detailed Member Popup Card */}
+              {selectedMember && (
+                <div className="p-6 rounded-2xl bg-gradient-to-r from-amber-50 to-purple-50 border-2 border-purple-200 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-xl font-black text-purple-900">
+                        {selectedMember.display_name} (@{selectedMember.username})
+                      </h3>
+                      <p className="text-xs text-slate-600">{selectedMember.bio}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMember(null)}
+                      className="text-xs font-bold text-rose-600 hover:underline"
+                    >
+                      Close Player View
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                    <div className="p-3 rounded-xl bg-white shadow-sm">
+                      <p className="text-xs text-slate-500">Player Level</p>
+                      <p className="text-xl font-black text-purple-900">
+                        Level {selectedMember.level}
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white shadow-sm">
+                      <p className="text-xs text-slate-500">Total XP</p>
+                      <p className="text-xl font-black text-amber-600">{selectedMember.xp} XP</p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white shadow-sm">
+                      <p className="text-xs text-slate-500">Time Spent Playing</p>
+                      <p className="text-xl font-black text-emerald-600">
+                        {formatDuration(selectedMember.total_seconds)}
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white shadow-sm">
+                      <p className="text-xs text-slate-500">Games & Best Score</p>
+                      <p className="text-xl font-black text-indigo-600">
+                        {selectedMember.games_played} ({selectedMember.top_score} pts)
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </Layout>
     </ProtectedRoute>

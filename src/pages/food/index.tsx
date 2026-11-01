@@ -17,6 +17,50 @@ const GRID_SIZE = 15;
 type Point = { x: number; y: number };
 type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
 
+function getCalorieSpeedProfile(calories: number): {
+  label: string;
+  badgeColor: string;
+  baseSpeedMs: number;
+  minSpeedMs: number;
+  xpPerBite: number;
+  desc: string;
+} {
+  if (calories <= 100) {
+    return {
+      label: '🔥 Hard (Fast Snake)',
+      badgeColor: 'bg-red-100 text-red-700 border-red-200',
+      baseSpeedMs: 120,
+      minSpeedMs: 75,
+      xpPerBite: 20,
+      desc: 'Low calories = Agile & Fast Snake! Double XP (+20 XP per bite)!',
+    };
+  }
+  if (calories <= 210) {
+    return {
+      label: '⚡ Medium (Balanced Speed)',
+      badgeColor: 'bg-amber-100 text-amber-800 border-amber-200',
+      baseSpeedMs: 170,
+      minSpeedMs: 105,
+      xpPerBite: 15,
+      desc: 'Medium calories = Balanced Snake speed (+15 XP per bite).',
+    };
+  }
+  return {
+    label: '🐢 Easy (Slow Heavy Snake)',
+    badgeColor: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+    baseSpeedMs: 230,
+    minSpeedMs: 145,
+    xpPerBite: 10,
+    desc: 'High calories = Heavy & Slow Snake! Easier to steer (+10 XP per bite).',
+  };
+}
+
+function formatPlayTime(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
 export default function FoodPage() {
   const { profile, updateProfile } = useAuthStore();
   const [activeMode, setActiveMode] = useState<'catalogue' | 'snake'>('snake');
@@ -50,8 +94,11 @@ export default function FoodPage() {
   const [itemsEaten, setItemsEaten] = useState(0);
   const [snakeCalories, setSnakeCalories] = useState(0);
   const [snakeXp, setSnakeXp] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [savingSnake, setSavingSnake] = useState(false);
   const [sessionSaved, setSessionSaved] = useState(false);
+
+  const speedProfile = getCalorieSpeedProfile(snakeFood?.calories || 150);
 
   const getRandomFoodPoint = useCallback((currentSnake: Point[]): Point => {
     while (true) {
@@ -79,10 +126,20 @@ export default function FoodPage() {
     setItemsEaten(0);
     setSnakeCalories(0);
     setSnakeXp(0);
+    setElapsedSeconds(0);
     setIsGameOver(false);
     setSessionSaved(false);
     setIsPlaying(true);
   };
+
+  // Live Playtime Stopwatch
+  useEffect(() => {
+    if (!isPlaying || isGameOver) return;
+    const interval = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isPlaying, isGameOver]);
 
   const changeDirection = useCallback((nextDir: Direction) => {
     const current = directionRef.current;
@@ -101,7 +158,6 @@ export default function FoodPage() {
     }
   }, []);
 
-  // Keyboard controls (Arrow keys & WASD)
   useEffect(() => {
     if (activeMode !== 'snake' || !isPlaying) return;
 
@@ -126,11 +182,15 @@ export default function FoodPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeMode, isPlaying, changeDirection]);
 
-  // Main Snake Movement Loop
+  // Main Snake Movement Loop with Calorie-Based Speed
   useEffect(() => {
     if (!isPlaying || isGameOver) return;
 
-    const speedMs = Math.max(95, 210 - itemsEaten * 6);
+    const currentSpeedMs = Math.max(
+      speedProfile.minSpeedMs,
+      speedProfile.baseSpeedMs - itemsEaten * 3
+    );
+
     const timer = setInterval(() => {
       setSnake((prevSnake) => {
         const head = prevSnake[0];
@@ -140,7 +200,6 @@ export default function FoodPage() {
           y: dir === 'UP' ? head.y - 1 : dir === 'DOWN' ? head.y + 1 : head.y,
         };
 
-        // Check Wall Collision
         if (
           nextHead.x < 0 ||
           nextHead.x >= GRID_SIZE ||
@@ -152,7 +211,6 @@ export default function FoodPage() {
           return prevSnake;
         }
 
-        // Check Self Collision
         const hitSelf = prevSnake.some(
           (seg) => seg.x === nextHead.x && seg.y === nextHead.y
         );
@@ -167,20 +225,21 @@ export default function FoodPage() {
           const grownSnake = [nextHead, ...prevSnake];
           setItemsEaten((c) => c + 1);
           setSnakeCalories((cal) => cal + (snakeFood?.calories || 100));
-          setSnakeXp((xp) => xp + 10);
+          setSnakeXp((xp) => xp + speedProfile.xpPerBite);
           setFoodPos(getRandomFoodPoint(grownSnake));
           return grownSnake;
         }
 
         return [nextHead, ...prevSnake.slice(0, -1)];
       });
-    }, speedMs);
+    }, currentSpeedMs);
 
     return () => clearInterval(timer);
-  }, [isPlaying, isGameOver, itemsEaten, foodPos, snakeFood, getRandomFoodPoint]);
+  }, [isPlaying, isGameOver, itemsEaten, foodPos, snakeFood, speedProfile, getRandomFoodPoint]);
 
   const saveSnakeSessionToProfile = async () => {
-    if (!profile || savingSnake || sessionSaved || itemsEaten === 0) return;
+    if (!profile || savingSnake || sessionSaved) return;
+    const durationToSave = Math.max(5, elapsedSeconds);
     setSavingSnake(true);
     try {
       const newCals = Math.max(0, (profile.virtual_calories || 0) + snakeCalories);
@@ -190,24 +249,46 @@ export default function FoodPage() {
         total_sessions: (profile.total_sessions || 0) + 1,
       });
 
+      // Try inserting with duration_seconds first; fallback if column not added yet
+      const payloadWithDuration = {
+        user_id: profile.id,
+        session_type: 'solo',
+        total_calories_added: snakeCalories,
+        total_calories_removed: 0,
+        puzzles_attempted: 0,
+        puzzles_correct: 0,
+        xp_earned: snakeXp,
+        duration_seconds: durationToSave,
+      };
+
       const { error } = await withRequestTimeout(
-        typedDb.from('game_sessions').insert({
-          user_id: profile.id,
-          session_type: 'solo',
-          total_calories_added: snakeCalories,
-          total_calories_removed: 0,
-          puzzles_attempted: 0,
-          puzzles_correct: 0,
-          xp_earned: snakeXp,
-        }),
+        typedDb.from('game_sessions').insert(payloadWithDuration),
         15000,
         'Snake session save timed out'
       );
 
-      if (error) throw error;
+      if (error) {
+        // Fallback without duration_seconds if SQL wasn't run yet
+        await withRequestTimeout(
+          typedDb.from('game_sessions').insert({
+            user_id: profile.id,
+            session_type: 'solo',
+            total_calories_added: snakeCalories,
+            total_calories_removed: 0,
+            puzzles_attempted: 0,
+            puzzles_correct: 0,
+            xp_earned: snakeXp,
+          }),
+          15000,
+          'Snake session save timed out'
+        );
+      }
+
       setSessionSaved(true);
       toast.success(
-        `Saved! +${snakeCalories} Virtual Calories & +${snakeXp} XP added to your profile! 🐍🎉`
+        `Saved! +${snakeCalories} Cal, +${snakeXp} XP & ${formatPlayTime(
+          durationToSave
+        )} Time Spent recorded! 🐍🎉`
       );
     } catch (error) {
       toast.error(
@@ -227,12 +308,7 @@ export default function FoodPage() {
   };
 
   const eatFood = async (food: FoodItem, indexOnPlate: number) => {
-    if (!profile) {
-      toast.error('Your profile is still loading. Please refresh the page.');
-      return;
-    }
-    if (eatingIndex !== null) return;
-
+    if (!profile || eatingIndex !== null) return;
     setEatingIndex(indexOnPlate);
     try {
       const newCals = Math.max(0, (profile.virtual_calories || 0) + food.calories);
@@ -241,6 +317,7 @@ export default function FoodPage() {
         xp: (profile.xp || 0) + 5,
         total_sessions: (profile.total_sessions || 0) + 1,
       });
+
       const { error } = await withRequestTimeout(
         typedDb.from('game_sessions').insert({
           user_id: profile.id,
@@ -250,11 +327,28 @@ export default function FoodPage() {
           puzzles_attempted: 0,
           puzzles_correct: 0,
           xp_earned: 5,
+          duration_seconds: 15,
         }),
         15000,
         'Snack session save timed out'
       );
-      if (error) throw error;
+
+      if (error) {
+        await withRequestTimeout(
+          typedDb.from('game_sessions').insert({
+            user_id: profile.id,
+            session_type: 'solo',
+            total_calories_added: food.calories,
+            total_calories_removed: 0,
+            puzzles_attempted: 0,
+            puzzles_correct: 0,
+            xp_earned: 5,
+          }),
+          15000,
+          'Snack session save timed out'
+        );
+      }
+
       setPlate((items) => items.filter((_, itemIndex) => itemIndex !== indexOnPlate));
       toast.success(`Yum! Ate ${food.emoji} ${food.name} (+${food.calories} cal, +5 XP)!`);
     } catch (error) {
@@ -270,7 +364,6 @@ export default function FoodPage() {
     <ProtectedRoute>
       <Layout title="Food & Snake Arcade">
         <div className="max-w-6xl mx-auto py-4">
-          {/* Top Header & Mode Switcher */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <div>
               <h1 className="text-3xl font-poppins font-bold text-pv-plum">
@@ -319,19 +412,24 @@ export default function FoodPage() {
 
           {activeMode === 'snake' ? (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* Left Column: Food Selector & Live Scoreboard */}
               <div className="lg:col-span-5 space-y-5">
                 <div className="clay-card p-5">
                   <h2 className="text-lg font-poppins font-bold text-pv-plum mb-1">
-                    1. Choose Snack for Snake to Eat
+                    1. Choose Snack (Sets Snake Speed!)
                   </h2>
                   <p className="text-xs text-gray-500 mb-3">
-                    Every time the snake eats your chosen snack, it grows longer and adds its
-                    calories!
+                    <strong>Low Calories</strong> = Fast &amp; Hard Snake (More XP!) •{' '}
+                    <strong>High Calories</strong> = Slow &amp; Easy Snake!
                   </p>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-60 overflow-y-auto pr-1">
                     {FOOD_CATALOG.map((item) => {
                       const isChosen = snakeFood?.id === item.id;
+                      const itemSpeed =
+                        item.calories <= 100
+                          ? '🔥 Fast'
+                          : item.calories <= 210
+                          ? '⚡ Med'
+                          : '🐢 Slow';
                       return (
                         <button
                           key={item.id}
@@ -348,7 +446,7 @@ export default function FoodPage() {
                             {item.name}
                           </span>
                           <span className="text-[11px] text-pv-pink font-semibold">
-                            +{item.calories} cal
+                            {item.calories} cal • {itemSpeed}
                           </span>
                         </button>
                       );
@@ -356,40 +454,43 @@ export default function FoodPage() {
                   </div>
                 </div>
 
-                {/* Live Snake Stats Card */}
+                {/* Speed Difficulty & Live Stats Card */}
                 <div className="glass-panel p-5 space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <span className="text-sm font-bold text-pv-plum">
-                      Selected Target: {snakeFood?.emoji} {snakeFood?.name}
+                      Food: {snakeFood?.emoji} {snakeFood?.name} ({snakeFood?.calories} cal)
                     </span>
-                    <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-bold">
-                      +{snakeFood?.calories} cal / bite
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-bold border ${speedProfile.badgeColor}`}
+                    >
+                      {speedProfile.label}
                     </span>
                   </div>
+                  <p className="text-xs text-gray-600">{speedProfile.desc}</p>
 
-                  <div className="grid grid-cols-3 gap-3 text-center">
-                    <div className="p-3 rounded-2xl bg-white/80 border border-purple-100">
-                      <p className="text-[11px] uppercase font-bold text-gray-400">
-                        Snacks Eaten
-                      </p>
-                      <p className="text-xl font-black text-pv-plum mt-0.5">
+                  <div className="grid grid-cols-4 gap-2 text-center">
+                    <div className="p-2.5 rounded-2xl bg-white/80 border border-purple-100">
+                      <p className="text-[10px] uppercase font-bold text-gray-400">Eaten</p>
+                      <p className="text-lg font-black text-pv-plum mt-0.5">
                         {itemsEaten} {snakeFood?.emoji}
                       </p>
                     </div>
-                    <div className="p-3 rounded-2xl bg-white/80 border border-purple-100">
-                      <p className="text-[11px] uppercase font-bold text-gray-400">
-                        Calories Gained
-                      </p>
-                      <p className="text-xl font-black text-pv-pink mt-0.5">
+                    <div className="p-2.5 rounded-2xl bg-white/80 border border-purple-100">
+                      <p className="text-[10px] uppercase font-bold text-gray-400">Calories</p>
+                      <p className="text-lg font-black text-pv-pink mt-0.5">
                         +{snakeCalories}
                       </p>
                     </div>
-                    <div className="p-3 rounded-2xl bg-white/80 border border-purple-100">
-                      <p className="text-[11px] uppercase font-bold text-gray-400">
-                        XP Earned
+                    <div className="p-2.5 rounded-2xl bg-white/80 border border-purple-100">
+                      <p className="text-[10px] uppercase font-bold text-gray-400">XP</p>
+                      <p className="text-lg font-black text-emerald-600 mt-0.5">
+                        +{snakeXp}
                       </p>
-                      <p className="text-xl font-black text-emerald-600 mt-0.5">
-                        +{snakeXp} XP
+                    </div>
+                    <div className="p-2.5 rounded-2xl bg-white/80 border border-purple-100">
+                      <p className="text-[10px] uppercase font-bold text-gray-400">Time</p>
+                      <p className="text-lg font-black text-indigo-600 mt-0.5">
+                        ⏱️ {formatPlayTime(elapsedSeconds)}
                       </p>
                     </div>
                   </div>
@@ -414,11 +515,11 @@ export default function FoodPage() {
                           setIsGameOver(true);
                         }}
                       >
-                        ⏹️ End Run &amp; Save Score
+                        ⏹️ Stop &amp; Save Progress
                       </ClayButton>
                     )}
 
-                    {(isGameOver || (!isPlaying && itemsEaten > 0)) && !sessionSaved && (
+                    {(isGameOver || (!isPlaying && elapsedSeconds > 0)) && !sessionSaved && (
                       <ClayButton
                         variant="secondary"
                         size="lg"
@@ -428,23 +529,24 @@ export default function FoodPage() {
                       >
                         {savingSnake
                           ? 'Saving to Profile...'
-                          : `💾 Save +${snakeCalories} Cal & +${snakeXp} XP to Profile`}
+                          : `💾 Save +${snakeCalories} Cal, +${snakeXp} XP & ${formatPlayTime(
+                              elapsedSeconds
+                            )} Time`}
                       </ClayButton>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Right Column: Interactive Snake Board & Touch D-Pad */}
+              {/* Right Column: Snake Board */}
               <div className="lg:col-span-7 flex flex-col items-center">
                 <div className="clay-card p-4 sm:p-6 w-full flex flex-col items-center">
                   <div className="flex items-center justify-between w-full max-w-[420px] mb-3 text-xs font-bold text-pv-plum">
-                    <span>🐍 Length: {snake.length} blocks</span>
-                    <span>Direction: {direction}</span>
-                    <span>Use Arrow Keys / WASD / Buttons</span>
+                    <span>🐍 Length: {snake.length}</span>
+                    <span>{speedProfile.label}</span>
+                    <span>⏱️ {formatPlayTime(elapsedSeconds)}</span>
                   </div>
 
-                  {/* 15x15 Grid Board */}
                   <div
                     className="relative bg-pv-cream/90 border-4 border-pv-plum/20 rounded-2xl shadow-inner overflow-hidden"
                     style={{
@@ -475,7 +577,9 @@ export default function FoodPage() {
                               : ''
                           }`}
                         >
-                          {isHead ? '👀' : isFood ? (
+                          {isHead ? (
+                            '👀'
+                          ) : isFood ? (
                             <span className="text-base sm:text-lg animate-bounce">
                               {snakeFood?.emoji || '🍎'}
                             </span>
@@ -484,19 +588,31 @@ export default function FoodPage() {
                       );
                     })}
 
-                    {/* Overlay when not playing */}
                     {!isPlaying && (
-                      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px] flex flex-col items-center justify-center p-6 text-center text-white">
+                      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex flex-col items-center justify-center p-6 text-center text-white">
                         {isGameOver ? (
                           <>
                             <div className="text-4xl mb-2">💥🐍</div>
-                            <h3 className="text-2xl font-poppins font-bold">Game Over!</h3>
+                            <h3 className="text-2xl font-poppins font-bold">Run Complete!</h3>
                             <p className="text-sm mt-1">
-                              Your snake ate <strong>{itemsEaten}</strong> {snakeFood?.name}s (
-                              <strong>+{snakeCalories} cal</strong> &amp;{' '}
-                              <strong>+{snakeXp} XP</strong>)!
+                              Ate <strong>{itemsEaten}</strong> {snakeFood?.name}s •{' '}
+                              <strong>+{snakeCalories} cal</strong> •{' '}
+                              <strong>+{snakeXp} XP</strong> • Time:{' '}
+                              <strong>{formatPlayTime(elapsedSeconds)}</strong>
                             </p>
                             <div className="flex flex-wrap gap-3 justify-center mt-4">
+                              {!sessionSaved && (
+                                <button
+                                  type="button"
+                                  onClick={saveSnakeSessionToProfile}
+                                  disabled={savingSnake}
+                                  className="px-5 py-2.5 rounded-xl bg-emerald-500 text-white font-bold shadow-lg hover:bg-emerald-600"
+                                >
+                                  {savingSnake
+                                    ? 'Saving...'
+                                    : '💾 Save Calories, XP & Time'}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={startSnakeGame}
@@ -504,27 +620,19 @@ export default function FoodPage() {
                               >
                                 🔄 Play Again
                               </button>
-                              {itemsEaten > 0 && !sessionSaved && (
-                                <button
-                                  type="button"
-                                  onClick={saveSnakeSessionToProfile}
-                                  disabled={savingSnake}
-                                  className="px-5 py-2.5 rounded-xl bg-emerald-500 text-white font-bold shadow-lg hover:bg-emerald-600"
-                                >
-                                  {savingSnake ? 'Saving...' : '💾 Save Calories & XP'}
-                                </button>
-                              )}
                             </div>
                           </>
                         ) : (
                           <>
                             <div className="text-5xl mb-2">🐍{snakeFood?.emoji}</div>
                             <h3 className="text-2xl font-poppins font-bold">
-                              Feed the Snake!
+                              {snakeFood?.name} ({snakeFood?.calories} cal)
                             </h3>
-                            <p className="text-xs sm:text-sm max-w-xs mt-1 text-white/90">
-                              Steer the snake to eat <strong>{snakeFood?.name}</strong> (
-                              {snakeFood?.calories} cal). Each bite makes your snake grow longer!
+                            <span className="mt-1 px-3 py-1 rounded-full bg-white/20 text-xs font-bold">
+                              Mode: {speedProfile.label}
+                            </span>
+                            <p className="text-xs sm:text-sm max-w-xs mt-2 text-white/90">
+                              {speedProfile.desc}
                             </p>
                             <button
                               type="button"
@@ -577,7 +685,6 @@ export default function FoodPage() {
             </div>
           ) : (
             <>
-              {/* Original Virtual Food Catalogue View */}
               <div className="flex flex-col md:flex-row gap-4 mb-6">
                 <input
                   type="text"

@@ -56,7 +56,6 @@ export default function FriendsPage() {
     try {
       const friendIdsSet = new Set<string>();
 
-      // Check 'friends' table
       const { data: f1 } = await supabase
         .from('friends' as never)
         .select('*')
@@ -69,7 +68,6 @@ export default function FriendsPage() {
         if (fid && fid !== user.id) friendIdsSet.add(fid);
       });
 
-      // Also check 'friendships' table if used
       const { data: f2 } = await supabase
         .from('friendships' as never)
         .select('*')
@@ -90,7 +88,6 @@ export default function FriendsPage() {
         return;
       }
 
-      // Fetch full profiles for all friends
       const { data: profData, error: profErr } = await supabase
         .from('profiles')
         .select('*')
@@ -98,7 +95,6 @@ export default function FriendsPage() {
 
       if (profErr) throw profErr;
 
-      // Fetch game sessions for all friends to compute Time Spent, Games Played & Recent Activity
       const { data: sessionsData } = await supabase
         .from('game_sessions')
         .select('*')
@@ -190,7 +186,6 @@ export default function FriendsPage() {
         return;
       }
 
-      // Insert into friends (and fallback to friendships if schema uses that)
       const { error: insertErr } = await supabase.from('friends' as never).insert({
         user_id: user.id,
         friend_id: targetId,
@@ -223,7 +218,6 @@ export default function FriendsPage() {
             <span>👥</span> Friends
           </h1>
 
-          {/* Find a player */}
           <div className="clay-card p-6">
             <h2 className="text-xl font-bold text-purple-900 mb-4">Find a player</h2>
             <form onSubmit={handleAddFriend} className="flex flex-col sm:flex-row gap-3">
@@ -240,17 +234,16 @@ export default function FriendsPage() {
             </form>
           </div>
 
-          {/* Friends List with Full Stats Preview */}
           <div className="space-y-4">
             <h2 className="text-2xl font-bold text-purple-900">
-              My Friends ({friends.length}){' '}
-              <span className="text-sm font-normal text-slate-500">
-                (Click any friend to inspect full profile, time spent & game history)
+              My Friends ({friends.length})
+              <span className="text-sm font-normal text-slate-500 ml-2">
+                (Click any friend card to view details)
               </span>
             </h2>
 
             {loading ? (
-              <div className="clay-card p-8 text-center text-slate-500">
+              <div className="clay-card p-8 text-center text-slate-500 font-semibold animate-pulse">
                 Loading your friends and their live stats...
               </div>
             ) : friends.length === 0 ? (
@@ -258,183 +251,97 @@ export default function FriendsPage() {
                 No friends yet. Search for a username above to get started!
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {friends.map((friend) => {
-                  const isSelected = selectedFriend?.id === friend.id;
-                  return (
-                    <div
-                      key={friend.id}
-                      onClick={() => setSelectedFriend(friend)}
-                      className={`clay-card p-6 cursor-pointer transition-all hover:scale-[1.01] border-2 ${
-                        isSelected
-                          ? 'border-amber-500 ring-2 ring-amber-300'
-                          : 'border-transparent hover:border-purple-200'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 text-white font-black text-lg flex items-center justify-center shadow">
+              <div className="grid grid-cols-1 gap-4">
+                {friends.map((friend) => (
+                  <div
+                    key={friend.id}
+                    onClick={() => setSelectedFriend(selectedFriend?.id === friend.id ? null : friend)}
+                    className="clay-card p-6 cursor-pointer transition-all hover:scale-[1.01] border-2 border-transparent hover:border-purple-200"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between w-full gap-4">
+                        <div className="flex items-center gap-4">
+                          <div className="w-14 h-14 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white font-black text-2xl flex items-center justify-center shadow-md">
                             {friend.display_name.charAt(0).toUpperCase()}
                           </div>
                           <div>
-                            <h3 className="text-lg font-extrabold text-purple-900">
+                            <h3 className="text-xl font-extrabold text-purple-900">
                               {friend.display_name}
                             </h3>
-                            <p className="text-xs font-semibold text-amber-700">
-                              @{friend.username} • {friend.favorite_snack}
+                            <p className="text-sm font-medium text-slate-500 mt-0.5">
+                              @{friend.username}
                             </p>
                           </div>
                         </div>
-
-                        <span className="px-3 py-1 rounded-full bg-purple-100 text-purple-900 text-xs font-black">
-                          Level {friend.level}
-                        </span>
-                      </div>
-
-                      <p className="text-xs text-slate-600 mt-3 line-clamp-2">{friend.bio}</p>
-
-                      {/* Quick Stats Bar on Card */}
-                      <div className="mt-4 pt-3 border-t border-purple-100 grid grid-cols-3 gap-2 text-center">
-                        <div className="bg-amber-50/80 p-2 rounded-xl">
-                          <p className="text-[10px] uppercase font-bold text-slate-500">Total XP</p>
-                          <p className="text-sm font-black text-amber-600">⭐ {friend.xp}</p>
+                        <div className="flex flex-wrap items-center gap-6 bg-slate-50 px-5 py-3 rounded-xl border border-slate-100">
+                           <div className="text-center">
+                             <p className="text-[10px] uppercase font-bold text-slate-400">Level</p>
+                             <p className="text-base font-black text-purple-900">Lv. {friend.level}</p>
+                           </div>
+                           <div className="w-px h-8 bg-slate-200 hidden sm:block"></div>
+                           <div className="text-center">
+                             <p className="text-[10px] uppercase font-bold text-slate-400">Total XP</p>
+                             <p className="text-base font-black text-amber-600">{friend.xp} XP</p>
+                           </div>
                         </div>
-                        <div className="bg-emerald-50/80 p-2 rounded-xl">
-                          <p className="text-[10px] uppercase font-bold text-slate-500">
-                            Time Spent
-                          </p>
-                          <p className="text-sm font-black text-emerald-700">
-                            ⏱️ {formatTimeSpent(friend.total_seconds)}
-                          </p>
-                        </div>
-                        <div className="bg-indigo-50/80 p-2 rounded-xl">
-                          <p className="text-[10px] uppercase font-bold text-slate-500">Games</p>
-                          <p className="text-sm font-black text-indigo-700">
-                            🎮 {friend.games_played}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="mt-3 text-right">
-                        <span className="text-xs font-bold text-purple-700 hover:underline">
-                          View Full Stats & Activity →
-                        </span>
-                      </div>
                     </div>
-                  );
-                })}
+                    
+                    {selectedFriend?.id === friend.id && (
+                        <div className="w-full mt-6 pt-6 border-t border-slate-200 animate-fadeIn space-y-6">
+                             <div>
+                               <p className="text-sm text-slate-600 italic">"{friend.bio}"</p>
+                               <p className="text-xs font-semibold text-amber-700 mt-1">Favorite Snack: {friend.favorite_snack}</p>
+                             </div>
+                             
+                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                                <div className="p-4 rounded-xl bg-purple-50 border border-purple-100">
+                                  <p className="text-xs text-purple-600 font-bold uppercase tracking-wider">Level</p>
+                                  <p className="text-xl font-black text-purple-900 mt-1">Lv. {friend.level}</p>
+                                </div>
+                                <div className="p-4 rounded-xl bg-amber-50 border border-amber-100">
+                                  <p className="text-xs text-amber-600 font-bold uppercase tracking-wider">Total XP</p>
+                                  <p className="text-xl font-black text-amber-700 mt-1">{friend.xp} XP</p>
+                                </div>
+                                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-100">
+                                  <p className="text-xs text-emerald-600 font-bold uppercase tracking-wider">Time Spent</p>
+                                  <p className="text-xl font-black text-emerald-700 mt-1">
+                                    {formatTimeSpent(friend.total_seconds)}
+                                  </p>
+                                </div>
+                                <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-100">
+                                  <p className="text-xs text-indigo-600 font-bold uppercase tracking-wider">Games Played</p>
+                                  <p className="text-xl font-black text-indigo-700 mt-1">
+                                    {friend.games_played}
+                                  </p>
+                                </div>
+                              </div>
+                              
+                              <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200">
+                                <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-4">Recent Activity</h4>
+                                {friend.recent_sessions.length === 0 ? (
+                                    <p className="text-sm text-slate-500 italic">No recent games played.</p>
+                                ) : (
+                                    <div className="space-y-3">
+                                      {friend.recent_sessions.map((sess) => (
+                                        <div key={sess.id} className="flex justify-between items-center bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
+                                           <div>
+                                              <p className="font-bold text-purple-900 capitalize text-sm">{sess.game_type.replace('_', ' ')}</p>
+                                              <p className="text-xs text-slate-500 mt-0.5">Score: {sess.score} • {formatTimeSpent(sess.duration_seconds)}</p>
+                                           </div>
+                                           <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800">
+                                             +{sess.xp_earned} XP
+                                           </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                )}
+                              </div>
+                        </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
-
-          {/* Full Friend Profile & Time Spent Inspector Modal/Panel */}
-          {selectedFriend && (
-            <div className="clay-card p-6 md:p-8 border-2 border-amber-400 space-y-6 animate-fadeIn">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-purple-100 pb-4">
-                <div className="flex items-center gap-4">
-                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 text-white font-black text-2xl flex items-center justify-center shadow-lg">
-                    {selectedFriend.display_name.charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <span className="text-xs font-bold uppercase tracking-wider text-amber-600">
-                      Friend Profile & Live Telemetry
-                    </span>
-                    <h2 className="text-2xl font-black text-purple-900">
-                      {selectedFriend.display_name}{' '}
-                      <span className="text-base font-semibold text-slate-500">
-                        (@{selectedFriend.username})
-                      </span>
-                    </h2>
-                    <p className="text-sm text-slate-600">{selectedFriend.bio}</p>
-                  </div>
-                </div>
-
-                <ClayButton
-                  type="button"
-                  variant="danger"
-                  size="sm"
-                  onClick={() => setSelectedFriend(null)}
-                >
-                  Close Profile ✕
-                </ClayButton>
-              </div>
-
-              {/* Complete Stats Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
-                <div className="p-4 rounded-2xl bg-white/90 border border-purple-100 shadow-sm">
-                  <p className="text-xs font-semibold text-slate-500">Current Level</p>
-                  <p className="text-2xl font-black text-purple-900 mt-1">
-                    Lv. {selectedFriend.level}
-                  </p>
-                </div>
-                <div className="p-4 rounded-2xl bg-white/90 border border-purple-100 shadow-sm">
-                  <p className="text-xs font-semibold text-slate-500">Total XP</p>
-                  <p className="text-2xl font-black text-amber-600 mt-1">
-                    {selectedFriend.xp} XP
-                  </p>
-                </div>
-                <div className="p-4 rounded-2xl bg-white/90 border border-purple-100 shadow-sm">
-                  <p className="text-xs font-semibold text-slate-500">Total Time Spent</p>
-                  <p className="text-2xl font-black text-emerald-600 mt-1">
-                    {formatTimeSpent(selectedFriend.total_seconds)}
-                  </p>
-                </div>
-                <div className="p-4 rounded-2xl bg-white/90 border border-purple-100 shadow-sm">
-                  <p className="text-xs font-semibold text-slate-500">Games Played</p>
-                  <p className="text-2xl font-black text-indigo-600 mt-1">
-                    {selectedFriend.games_played}
-                  </p>
-                </div>
-                <div className="p-4 rounded-2xl bg-white/90 border border-purple-100 shadow-sm col-span-2 sm:col-span-1">
-                  <p className="text-xs font-semibold text-slate-500">Best Score / Streak</p>
-                  <p className="text-xl font-black text-rose-600 mt-1">
-                    {selectedFriend.top_score} pts • 🔥{selectedFriend.streak_days}d
-                  </p>
-                </div>
-              </div>
-
-              {/* Recent Game History of Friend */}
-              <div>
-                <h3 className="text-lg font-bold text-purple-900 mb-3">
-                  Recent Games Played by {selectedFriend.display_name}
-                </h3>
-                {selectedFriend.recent_sessions.length === 0 ? (
-                  <p className="text-sm text-slate-500 bg-white/60 p-4 rounded-xl">
-                    {selectedFriend.display_name} hasn&apos;t completed any recorded game sessions yet.
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {selectedFriend.recent_sessions.map((sess) => (
-                      <div
-                        key={sess.id}
-                        className="flex items-center justify-between p-3 rounded-xl bg-white/80 border border-purple-100"
-                      >
-                        <div>
-                          <p className="font-bold text-purple-900 capitalize">
-                            🎮 {sess.game_type.replace('_', ' ')}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            Score: <strong>{sess.score}</strong> • Time Spent:{' '}
-                            <strong>{formatTimeSpent(sess.duration_seconds)}</strong>
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800">
-                            +{sess.xp_earned} XP
-                          </span>
-                          {sess.created_at && (
-                            <p className="text-[11px] text-slate-400 mt-1">
-                              {new Date(sess.created_at).toLocaleDateString()}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </Layout>
     </ProtectedRoute>

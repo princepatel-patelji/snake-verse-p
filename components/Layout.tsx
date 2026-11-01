@@ -12,7 +12,7 @@ interface LayoutProps {
 }
 
 // 👉 PRINCE BHAI: Yahan '91' ke baad apna 10-digit WhatsApp number daal dena!
-const WHATSAPP_NUMBER = '919876543210';
+const WHATSAPP_NUMBER = '917268842331';
 
 const GUIDE_STEPS = [
   {

@@ -12,7 +12,6 @@ import type { PuzzleQuestion } from '@/types/database';
 
 const typedDb = supabase as unknown as SupabaseClient;
 
-// Dedicated C Programming Question Bank (Easy, Medium, Hard)
 const C_PROGRAMMING_BANK: PuzzleQuestion[] = [
   // EASY
   {
@@ -80,6 +79,17 @@ const C_PROGRAMMING_BANK: PuzzleQuestion[] = [
     xp_reward: 15,
     calorie_reward: 60,
     explanation: '<stdio.h> stands for Standard Input Output header file.',
+  },
+  {
+    id: 'c_easy_7',
+    question: 'Which of the following is a valid single-line comment in C (C99 and later)?',
+    options: ['// comment', '## comment', '-- comment', '<!-- comment -->'],
+    correct_answer: '// comment',
+    difficulty: 'easy',
+    category: 'C Programming',
+    xp_reward: 15,
+    calorie_reward: 60,
+    explanation: '// is used for single-line comments, while /* ... */ is used for multi-line comments.',
   },
 
   // MEDIUM
@@ -223,53 +233,100 @@ type DifficultyMode = 'all' | 'easy' | 'medium' | 'hard';
 
 const QUESTION_TIME_LIMIT = 20;
 
+function formatElapsed(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
 export default function PuzzlePage() {
   const { profile, updateProfile } = useAuthStore();
 
-  // Mode & Difficulty Filters
   const [subject, setSubject] = useState<SubjectMode>('c_lang');
   const [difficulty, setDifficulty] = useState<DifficultyMode>('all');
+  // Incremented ONLY when a full session is saved/reset so questions never repeat mid-session
+  const [sessionRound, setSessionRound] = useState(0);
 
-  // Quiz Gameplay State
   const [currentQ, setCurrentQ] = useState<PuzzleQuestion | null>(null);
   const [options, setOptions] = useState<string[]>([]);
   const [hiddenOptions, setHiddenOptions] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [showResult, setShowResult] = useState(false);
   const [isCorrect, setIsCorrect] = useState(false);
+
   const [score, setScore] = useState(0);
   const [xp, setXp] = useState(0);
   const [qIndex, setQIndex] = useState(0);
+  const [attemptedCount, setAttemptedCount] = useState(0);
   const [correctCount, setCorrectCount] = useState(0);
   const [streak, setStreak] = useState(0);
+  const [sessionSeconds, setSessionSeconds] = useState(0);
+  const [savingSession, setSavingSession] = useState(false);
+  const [sessionCompleteModal, setSessionCompleteModal] = useState(false);
 
-  // Fun Timer & Lifelines
   const [timeLeft, setTimeLeft] = useState(QUESTION_TIME_LIMIT);
   const [timerPaused, setTimerPaused] = useState(false);
   const [lifeline5050, setLifeline5050] = useState(2);
   const [lifelineFreeze, setLifelineFreeze] = useState(2);
   const [lifelineSkip, setLifelineSkip] = useState(2);
 
-  // Build filtered question deck whenever subject or difficulty changes
+  // Deduplicated & Shuffled Deck — Locked for the current sessionRound so NO question repeats
   const shuffled = useMemo(() => {
-    const sourceBank =
+    const rawBank =
       subject === 'c_lang' ? C_PROGRAMMING_BANK : [...PUZZLE_BANK, ...C_PROGRAMMING_BANK];
+
+    // Deduplicate by question ID and question text
+    const seen = new Set<string>();
+    const uniqueBank: PuzzleQuestion[] = [];
+    for (const item of rawBank) {
+      const key = `${item.id}::${item.question.trim().toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueBank.push(item);
+      }
+    }
+
     const filtered =
       difficulty === 'all'
-        ? sourceBank
-        : sourceBank.filter((q) => q.difficulty === difficulty);
-    const pool = filtered.length > 0 ? filtered : sourceBank;
-    return [...pool].sort(() => Math.random() - 0.5);
-  }, [subject, difficulty]);
+        ? uniqueBank
+        : uniqueBank.filter((q) => q.difficulty === difficulty);
 
-  // Reset index when user switches subject or difficulty
+    const pool = filtered.length > 0 ? filtered : uniqueBank;
+    // Fisher-Yates shuffle
+    const copy = [...pool];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = copy[i];
+      copy[i] = copy[j];
+      copy[j] = temp;
+    }
+    return copy;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subject, difficulty, sessionRound]);
+
+  // Total session playtime counter
   useEffect(() => {
+    if (sessionCompleteModal || timerPaused) return;
+    const interval = setInterval(() => {
+      setSessionSeconds((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [sessionCompleteModal, timerPaused]);
+
+  const startFreshSession = () => {
+    setSessionCompleteModal(false);
     setQIndex(0);
-    setSelected(null);
-    setShowResult(false);
-    setHiddenOptions([]);
-    setTimeLeft(QUESTION_TIME_LIMIT);
-  }, [subject, difficulty]);
+    setScore(0);
+    setXp(0);
+    setAttemptedCount(0);
+    setCorrectCount(0);
+    setStreak(0);
+    setSessionSeconds(0);
+    setLifeline5050(2);
+    setLifelineFreeze(2);
+    setLifelineSkip(2);
+    setSessionRound((r) => r + 1);
+  };
 
   useEffect(() => {
     if (qIndex < shuffled.length) {
@@ -285,46 +342,50 @@ export default function PuzzlePage() {
     }
   }, [qIndex, shuffled]);
 
-  // Countdown timer effect
   useEffect(() => {
-    if (!currentQ || showResult || timerPaused) return;
+    if (!currentQ || showResult || timerPaused || sessionCompleteModal) return;
     if (timeLeft <= 0) {
       setShowResult(true);
       setIsCorrect(false);
       setStreak(0);
+      setAttemptedCount((c) => c + 1);
       toast.error(`⏰ Time's up! Correct answer: ${currentQ.correct_answer}`);
       return;
     }
     const t = setTimeout(() => setTimeLeft((prev) => prev - 1), 1000);
     return () => clearTimeout(t);
-  }, [timeLeft, currentQ, showResult, timerPaused]);
+  }, [timeLeft, currentQ, showResult, timerPaused, sessionCompleteModal]);
 
   const use5050Lifeline = () => {
     if (!currentQ || showResult || lifeline5050 <= 0 || hiddenOptions.length > 0) return;
     const wrongOpts = options.filter((o) => o !== currentQ.correct_answer);
-    const toHide = wrongOpts.slice(0, 2);
-    setHiddenOptions(toHide);
+    setHiddenOptions(wrongOpts.slice(0, 2));
     setLifeline5050((c) => c - 1);
-    toast.success('💡 50:50 Lifeline used! 2 wrong options removed.');
+    toast.success('💡 50:50 Lifeline used!');
   };
 
   const useFreezeLifeline = () => {
     if (showResult || lifelineFreeze <= 0) return;
     setTimeLeft((t) => t + 15);
     setLifelineFreeze((c) => c - 1);
-    toast.success('❄️ +15 Seconds added to timer!');
+    toast.success('❄️ +15 Seconds added!');
   };
 
   const useSkipLifeline = () => {
     if (showResult || lifelineSkip <= 0) return;
     setLifelineSkip((c) => c - 1);
-    toast.success('⏭️ Question skipped without losing your streak!');
-    setQIndex((q) => (q + 1 < shuffled.length ? q + 1 : 0));
+    if (qIndex + 1 < shuffled.length) {
+      setQIndex((q) => q + 1);
+      toast.success('⏭️ Skipped to next unique question!');
+    } else {
+      setSessionCompleteModal(true);
+    }
   };
 
   const handleAnswer = async () => {
     if (!selected || !currentQ || showResult) return;
     setShowResult(true);
+    setAttemptedCount((c) => c + 1);
     const correct = selected === currentQ.correct_answer;
     setIsCorrect(correct);
 
@@ -346,7 +407,7 @@ export default function PuzzlePage() {
       );
     } else {
       setStreak(0);
-      toast.error(`Oops! The correct answer was: ${currentQ.correct_answer}`);
+      toast.error(`Oops! The answer was: ${currentQ.correct_answer}`);
     }
 
     if (profile) {
@@ -363,51 +424,77 @@ export default function PuzzlePage() {
           'Puzzle attempt save timed out'
         );
       } catch {
-        // Non-blocking for custom C question IDs if foreign key is strict
+        // Ignore if custom C ID is not in static table
       }
     }
   };
 
-  const nextQuestion = async () => {
-    if (qIndex + 1 >= shuffled.length) {
-      if (profile) {
-        try {
-          const newCals = Math.max(0, (profile.virtual_calories || 0) - score);
-          const newXp = (profile.xp || 0) + xp;
-          await updateProfile({
-            virtual_calories: newCals,
-            xp: newXp,
-            total_puzzles_solved: (profile.total_puzzles_solved || 0) + correctCount,
-            total_sessions: (profile.total_sessions || 0) + 1,
-          });
+  const saveAndFinishSession = async () => {
+    if (savingSession) return;
+    setSavingSession(true);
+    const durationToSave = Math.max(5, sessionSeconds);
+
+    try {
+      if (profile && (attemptedCount > 0 || xp > 0)) {
+        const newCals = Math.max(0, (profile.virtual_calories || 0) - score);
+        const newXp = (profile.xp || 0) + xp;
+        await updateProfile({
+          virtual_calories: newCals,
+          xp: newXp,
+          total_puzzles_solved: (profile.total_puzzles_solved || 0) + correctCount,
+          total_sessions: (profile.total_sessions || 0) + 1,
+        });
+
+        const payloadWithDuration = {
+          user_id: profile.id,
+          session_type: 'solo',
+          total_calories_added: 0,
+          total_calories_removed: score,
+          puzzles_attempted: Math.max(1, attemptedCount),
+          puzzles_correct: correctCount,
+          xp_earned: xp,
+          duration_seconds: durationToSave,
+        };
+
+        const { error } = await withRequestTimeout(
+          typedDb.from('game_sessions').insert(payloadWithDuration),
+          15000,
+          'Puzzle session save timed out'
+        );
+
+        if (error) {
           await withRequestTimeout(
             typedDb.from('game_sessions').insert({
               user_id: profile.id,
               session_type: 'solo',
               total_calories_added: 0,
               total_calories_removed: score,
-              puzzles_attempted: shuffled.length,
+              puzzles_attempted: Math.max(1, attemptedCount),
               puzzles_correct: correctCount,
               xp_earned: xp,
             }),
             15000,
             'Puzzle session save timed out'
           );
-        } catch (err) {
-          console.warn('Session save warning:', err);
         }
       }
+
       toast.success(
-        `🎉 Session Complete! Earned +${xp} XP & burned ${score} virtual calories!`
+        `🎉 Saved! +${xp} XP, -${score} Cal & ${formatElapsed(
+          durationToSave
+        )} Time Spent recorded!`
       );
-      setQIndex(0);
-      setScore(0);
-      setXp(0);
-      setCorrectCount(0);
-      setStreak(0);
-      setLifeline5050(2);
-      setLifelineFreeze(2);
-      setLifelineSkip(2);
+      setSessionCompleteModal(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not save session.');
+    } finally {
+      setSavingSession(false);
+    }
+  };
+
+  const nextQuestion = async () => {
+    if (qIndex + 1 >= shuffled.length) {
+      await saveAndFinishSession();
     } else {
       setQIndex((q) => q + 1);
     }
@@ -417,39 +504,40 @@ export default function PuzzlePage() {
     <ProtectedRoute>
       <Layout title="Puzzle Challenge">
         <div className="max-w-3xl mx-auto py-4 space-y-6">
-          {/* Top Title & Live Score Bar */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <div>
               <h1 className="text-3xl font-poppins font-bold text-pv-plum">
                 🧩 Puzzle &amp; Coding Arena
               </h1>
               <p className="text-xs sm:text-sm text-gray-600">
-                Choose C Programming or Random Trivia, pick your difficulty &amp; build streaks!
+                No repeated questions in a session • Save anytime to record XP &amp; Time Spent!
               </p>
             </div>
-            <div className="glass-panel px-4 py-2.5 flex items-center gap-3 text-sm">
-              <span className="text-pv-pink font-bold">⭐ XP: +{xp}</span>
+            <div className="glass-panel px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs sm:text-sm">
+              <span className="text-pv-pink font-bold">⭐ +{xp} XP</span>
               <span>•</span>
-              <span className="text-emerald-600 font-bold">🔥 Burned: -{score} cal</span>
-              {streak >= 2 && (
-                <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-extrabold animate-bounce">
-                  🔥 {streak}x Streak
-                </span>
-              )}
+              <span className="text-emerald-600 font-bold">🔥 -{score} cal</span>
+              <span>•</span>
+              <span className="text-indigo-600 font-bold">
+                ⏱️ {formatElapsed(sessionSeconds)}
+              </span>
             </div>
           </div>
 
-          {/* Subject & Difficulty Selector Bar */}
+          {/* Subject & Difficulty Selector */}
           <div className="clay-card p-4 sm:p-5 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-bold uppercase text-gray-400 mb-1.5">
-                  1. Choose Subject / Mode
+                  1. Choose Subject
                 </p>
                 <div className="flex gap-2 flex-wrap">
                   <button
                     type="button"
-                    onClick={() => setSubject('c_lang')}
+                    onClick={() => {
+                      setSubject('c_lang');
+                      startFreshSession();
+                    }}
                     className={`px-4 py-2 rounded-xl font-bold text-sm transition flex items-center gap-2 ${
                       subject === 'c_lang'
                         ? 'bg-pv-pink text-white shadow'
@@ -461,7 +549,10 @@ export default function PuzzlePage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSubject('random')}
+                    onClick={() => {
+                      setSubject('random');
+                      startFreshSession();
+                    }}
                     className={`px-4 py-2 rounded-xl font-bold text-sm transition flex items-center gap-2 ${
                       subject === 'random'
                         ? 'bg-pv-pink text-white shadow'
@@ -469,7 +560,7 @@ export default function PuzzlePage() {
                     }`}
                   >
                     <span>🎲</span>
-                    <span>Random Mix (Food + Trivia + C)</span>
+                    <span>Random Mix</span>
                   </button>
                 </div>
               </div>
@@ -481,7 +572,7 @@ export default function PuzzlePage() {
                 <div className="flex gap-1.5 flex-wrap">
                   {(
                     [
-                      { id: 'all', label: 'All Levels' },
+                      { id: 'all', label: 'All' },
                       { id: 'easy', label: '🟢 Easy' },
                       { id: 'medium', label: '🟡 Medium' },
                       { id: 'hard', label: '🔴 Hard' },
@@ -490,7 +581,10 @@ export default function PuzzlePage() {
                     <button
                       key={d.id}
                       type="button"
-                      onClick={() => setDifficulty(d.id)}
+                      onClick={() => {
+                        setDifficulty(d.id);
+                        startFreshSession();
+                      }}
                       className={`px-3 py-1.5 rounded-xl font-bold text-xs transition ${
                         difficulty === d.id
                           ? 'bg-pv-plum text-white shadow-sm'
@@ -504,17 +598,13 @@ export default function PuzzlePage() {
               </div>
             </div>
 
-            {/* Lifelines Bar */}
             <div className="pt-3 border-t border-purple-100 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-bold text-pv-plum">
-                🎮 Arcade Lifelines:
-              </span>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={use5050Lifeline}
                   disabled={showResult || lifeline5050 <= 0 || hiddenOptions.length > 0}
-                  className="px-3 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 disabled:opacity-40 text-amber-900 font-bold text-xs transition"
+                  className="px-3 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 disabled:opacity-40 text-amber-900 font-bold text-xs"
                 >
                   💡 50:50 ({lifeline5050})
                 </button>
@@ -522,177 +612,218 @@ export default function PuzzlePage() {
                   type="button"
                   onClick={useFreezeLifeline}
                   disabled={showResult || lifelineFreeze <= 0}
-                  className="px-3 py-1.5 rounded-xl bg-sky-100 hover:bg-sky-200 disabled:opacity-40 text-sky-900 font-bold text-xs transition"
+                  className="px-3 py-1.5 rounded-xl bg-sky-100 hover:bg-sky-200 disabled:opacity-40 text-sky-900 font-bold text-xs"
                 >
-                  ❄️ +15s Time ({lifelineFreeze})
+                  ❄️ +15s ({lifelineFreeze})
                 </button>
                 <button
                   type="button"
                   onClick={useSkipLifeline}
                   disabled={showResult || lifelineSkip <= 0}
-                  className="px-3 py-1.5 rounded-xl bg-purple-100 hover:bg-purple-200 disabled:opacity-40 text-purple-900 font-bold text-xs transition"
+                  className="px-3 py-1.5 rounded-xl bg-purple-100 hover:bg-purple-200 disabled:opacity-40 text-purple-900 font-bold text-xs"
                 >
                   ⏭️ Skip ({lifelineSkip})
                 </button>
               </div>
+
+              {attemptedCount > 0 && !sessionCompleteModal && (
+                <button
+                  type="button"
+                  onClick={() => void saveAndFinishSession()}
+                  disabled={savingSession}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs shadow"
+                >
+                  {savingSession ? 'Saving...' : '💾 Save Progress & Finish Now'}
+                </button>
+              )}
             </div>
           </div>
 
-          <AnimatePresence mode="wait">
-            {currentQ ? (
-              <motion.div
-                key={`${currentQ.id}-${qIndex}`}
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                className="clay-card mb-6"
+          {sessionCompleteModal ? (
+            <div className="clay-card p-8 text-center space-y-5 border-2 border-emerald-400">
+              <div className="text-5xl">🏆🎉</div>
+              <h2 className="text-3xl font-poppins font-bold text-pv-plum">
+                Session Saved Successfully!
+              </h2>
+              <p className="text-sm text-gray-600">
+                All your stats, XP, burned calories, and time spent have been synced to your
+                profile. Ready for a fresh round of questions?
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                <div className="p-3 rounded-2xl bg-purple-50">
+                  <p className="text-xs text-gray-500">Solved</p>
+                  <p className="text-xl font-black text-pv-plum">
+                    {correctCount} / {attemptedCount}
+                  </p>
+                </div>
+                <div className="p-3 rounded-2xl bg-amber-50">
+                  <p className="text-xs text-gray-500">XP Earned</p>
+                  <p className="text-xl font-black text-pv-pink">+{xp} XP</p>
+                </div>
+                <div className="p-3 rounded-2xl bg-emerald-50">
+                  <p className="text-xs text-gray-500">Calories Burned</p>
+                  <p className="text-xl font-black text-emerald-600">-{score} cal</p>
+                </div>
+                <div className="p-3 rounded-2xl bg-indigo-50">
+                  <p className="text-xs text-gray-500">Time Spent</p>
+                  <p className="text-xl font-black text-indigo-600">
+                    ⏱️ {formatElapsed(sessionSeconds)}
+                  </p>
+                </div>
+              </div>
+              <ClayButton
+                variant="primary"
+                size="lg"
+                onClick={startFreshSession}
+                className="w-full sm:w-auto"
               >
-                {/* Question Progress & Timer Header */}
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase ${
-                        currentQ.difficulty === 'hard'
-                          ? 'bg-red-100 text-red-600'
-                          : currentQ.difficulty === 'medium'
-                          ? 'bg-yellow-100 text-yellow-700'
-                          : 'bg-green-100 text-green-700'
-                      }`}
-                    >
-                      {currentQ.difficulty}
-                    </span>
-                    <span className="text-pv-plum font-semibold text-sm">
-                      {currentQ.category}
-                    </span>
-                    <span className="text-xs text-gray-400">
-                      (Q {qIndex + 1} of {shuffled.length})
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setTimerPaused((p) => !p)}
-                      className="text-xs px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold"
-                    >
-                      {timerPaused ? '▶️ Resume' : '⏸️ Pause'}
-                    </button>
-                    <span
-                      className={`px-3 py-1 rounded-full text-xs font-extrabold ${
-                        timeLeft <= 5
-                          ? 'bg-red-100 text-red-600 animate-pulse'
-                          : 'bg-purple-100 text-pv-plum'
-                      }`}
-                    >
-                      ⏱️ {timeLeft}s
-                    </span>
-                  </div>
-                </div>
-
-                {/* Visual Timer Progress Bar */}
-                <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-5">
-                  <div
-                    className={`h-full transition-all duration-500 ${
-                      timeLeft <= 5 ? 'bg-red-500' : 'bg-gradient-to-r from-pv-pink to-pv-lavender'
-                    }`}
-                    style={{
-                      width: `${Math.min(100, (timeLeft / QUESTION_TIME_LIMIT) * 100)}%`,
-                    }}
-                  />
-                </div>
-
-                <h2 className="text-xl font-semibold text-pv-plum mb-5 leading-snug">
-                  {currentQ.question}
-                </h2>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
-                  {options.map((opt, i) => {
-                    const isHidden = hiddenOptions.includes(opt);
-                    if (isHidden) {
-                      return (
-                        <div
-                          key={i}
-                          className="p-4 rounded-xl border-2 border-dashed border-gray-200 text-gray-300 text-sm flex items-center justify-center select-none"
-                        >
-                          50:50 Removed
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => setSelected(opt)}
-                        disabled={showResult}
-                        className={`p-4 rounded-xl border-2 text-left transition-all font-medium ${
-                          selected === opt
-                            ? showResult
-                              ? opt === currentQ.correct_answer
-                                ? 'border-green-500 bg-green-50 text-green-900'
-                                : 'border-red-500 bg-red-50 text-red-900'
-                              : 'border-pv-pink bg-pv-pink/10 text-pv-plum'
-                            : showResult && opt === currentQ.correct_answer
-                            ? 'border-green-500 bg-green-50 text-green-900'
-                            : 'border-gray-200 hover:border-pv-pink/50'
+                🔄 Start New Session (Reshuffle Questions)
+              </ClayButton>
+            </div>
+          ) : (
+            <AnimatePresence mode="wait">
+              {currentQ ? (
+                <motion.div
+                  key={`${currentQ.id}-${qIndex}-${sessionRound}`}
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="clay-card mb-6"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase ${
+                          currentQ.difficulty === 'hard'
+                            ? 'bg-red-100 text-red-600'
+                            : currentQ.difficulty === 'medium'
+                            ? 'bg-yellow-100 text-yellow-700'
+                            : 'bg-green-100 text-green-700'
                         }`}
                       >
-                        {opt}
+                        {currentQ.difficulty}
+                      </span>
+                      <span className="text-pv-plum font-semibold text-sm">
+                        {currentQ.category}
+                      </span>
+                      <span className="text-xs font-bold text-pv-pink">
+                        (Unique Q {qIndex + 1} of {shuffled.length})
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setTimerPaused((p) => !p)}
+                        className="text-xs px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold"
+                      >
+                        {timerPaused ? '▶️ Resume' : '⏸️ Pause'}
                       </button>
-                    );
-                  })}
-                </div>
+                      <span
+                        className={`px-3 py-1 rounded-full text-xs font-extrabold ${
+                          timeLeft <= 5
+                            ? 'bg-red-100 text-red-600 animate-pulse'
+                            : 'bg-purple-100 text-pv-plum'
+                        }`}
+                      >
+                        ⏱️ {timeLeft}s
+                      </span>
+                    </div>
+                  </div>
 
-                {showResult && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`p-4 rounded-xl mb-5 ${
-                      isCorrect
-                        ? 'bg-green-50 border border-green-200'
-                        : 'bg-red-50 border border-red-200'
-                    }`}
-                  >
-                    <p className="font-bold mb-1">
-                      {isCorrect ? '✅ Spot On!' : '❌ Not Quite!'}
-                    </p>
-                    <p className="text-gray-700 text-sm">{currentQ.explanation}</p>
-                  </motion.div>
-                )}
+                  <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-5">
+                    <div
+                      className={`h-full transition-all duration-500 ${
+                        timeLeft <= 5
+                          ? 'bg-red-500'
+                          : 'bg-gradient-to-r from-pv-pink to-pv-lavender'
+                      }`}
+                      style={{
+                        width: `${Math.min(100, (timeLeft / QUESTION_TIME_LIMIT) * 100)}%`,
+                      }}
+                    />
+                  </div>
 
-                <div className="flex justify-between items-center">
-                  <ClayButton
-                    variant="ghost"
-                    onClick={() => {
-                      setQIndex(0);
-                      setScore(0);
-                      setXp(0);
-                      setCorrectCount(0);
-                      setStreak(0);
-                      setLifeline5050(2);
-                      setLifelineFreeze(2);
-                      setLifelineSkip(2);
-                    }}
-                  >
-                    🔄 Reset Deck
-                  </ClayButton>
-                  <ClayButton
-                    variant="primary"
-                    onClick={showResult ? nextQuestion : handleAnswer}
-                    disabled={!selected && !showResult}
-                  >
-                    {showResult
-                      ? qIndex + 1 >= shuffled.length
-                        ? '🏆 Finish & Save XP'
-                        : 'Next Question →'
-                      : 'Submit Answer'}
-                  </ClayButton>
-                </div>
-              </motion.div>
-            ) : (
-              <div className="text-center py-10 text-gray-500">Loading puzzles...</div>
-            )}
-          </AnimatePresence>
+                  <h2 className="text-xl font-semibold text-pv-plum mb-5 leading-snug">
+                    {currentQ.question}
+                  </h2>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
+                    {options.map((opt, i) => {
+                      if (hiddenOptions.includes(opt)) {
+                        return (
+                          <div
+                            key={i}
+                            className="p-4 rounded-xl border-2 border-dashed border-gray-200 text-gray-300 text-sm flex items-center justify-center select-none"
+                          >
+                            50:50 Removed
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setSelected(opt)}
+                          disabled={showResult}
+                          className={`p-4 rounded-xl border-2 text-left transition-all font-medium ${
+                            selected === opt
+                              ? showResult
+                                ? opt === currentQ.correct_answer
+                                  ? 'border-green-500 bg-green-50 text-green-900'
+                                  : 'border-red-500 bg-red-50 text-red-900'
+                                : 'border-pv-pink bg-pv-pink/10 text-pv-plum'
+                              : showResult && opt === currentQ.correct_answer
+                              ? 'border-green-500 bg-green-50 text-green-900'
+                              : 'border-gray-200 hover:border-pv-pink/50'
+                          }`}
+                        >
+                          {opt}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {showResult && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`p-4 rounded-xl mb-5 ${
+                        isCorrect
+                          ? 'bg-green-50 border border-green-200'
+                          : 'bg-red-50 border border-red-200'
+                      }`}
+                    >
+                      <p className="font-bold mb-1">
+                        {isCorrect ? '✅ Correct!' : '❌ Incorrect'}
+                      </p>
+                      <p className="text-gray-700 text-sm">{currentQ.explanation}</p>
+                    </motion.div>
+                  )}
+
+                  <div className="flex justify-between items-center">
+                    <ClayButton variant="ghost" onClick={startFreshSession}>
+                      🔄 New Session
+                    </ClayButton>
+                    <ClayButton
+                      variant="primary"
+                      onClick={showResult ? nextQuestion : handleAnswer}
+                      disabled={!selected && !showResult || savingSession}
+                    >
+                      {showResult
+                        ? qIndex + 1 >= shuffled.length
+                          ? '🏆 Save & Finish Session'
+                          : 'Next Unique Question →'
+                        : 'Submit Answer'}
+                    </ClayButton>
+                  </div>
+                </motion.div>
+              ) : (
+                <div className="text-center py-10 text-gray-500">Loading puzzles...</div>
+              )}
+            </AnimatePresence>
+          )}
         </div>
       </Layout>
     </ProtectedRoute>

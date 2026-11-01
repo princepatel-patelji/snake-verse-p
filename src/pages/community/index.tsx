@@ -54,7 +54,7 @@ export default function CommunitiesPage() {
   const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
 
-  // Selected Community Modal / Detail View
+  // Selected Community Modal
   const [selectedCommunity, setSelectedCommunity] = useState<CommunityItem | null>(null);
   const [members, setMembers] = useState<MemberStat[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
@@ -102,7 +102,6 @@ export default function CommunitiesPage() {
     setSelectedMember(null);
     setLoadingMembers(true);
     try {
-      // 1. Fetch community members
       const { data: memRows, error: memErr } = await supabase
         .from('community_members')
         .select('user_id, role, joined_at')
@@ -116,13 +115,11 @@ export default function CommunitiesPage() {
         return;
       }
 
-      // 2. Fetch profiles for all members
       const { data: profRows } = await supabase
         .from('profiles')
         .select('*')
         .in('id', userIds);
 
-      // 3. Fetch game sessions for time spent & games played
       const { data: sessionRows } = await supabase
         .from('game_sessions')
         .select('user_id, duration_seconds, score, xp_earned')
@@ -181,7 +178,6 @@ export default function CommunitiesPage() {
         }
       );
 
-      // Sort by XP descending for leaderboard
       combined.sort((a, b) => b.xp - a.xp);
       setMembers(combined);
     } catch (err) {
@@ -303,7 +299,6 @@ export default function CommunitiesPage() {
             </h1>
           </div>
 
-          {/* Join & Create Forms */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="clay-card p-6">
               <h2 className="text-xl font-bold text-purple-900 mb-4">Join with Code</h2>
@@ -346,12 +341,11 @@ export default function CommunitiesPage() {
             </div>
           </div>
 
-          {/* My Communities List */}
           <div className="space-y-4">
             <h2 className="text-2xl font-bold text-purple-900">
               My Communities{' '}
               <span className="text-sm font-normal text-slate-500">
-                (Click any community card to view members, leaderboard & time spent)
+                (Click any community card to open it)
               </span>
             </h2>
 
@@ -380,31 +374,28 @@ export default function CommunitiesPage() {
                       }`}
                     >
                       <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <h3 className="text-xl font-extrabold text-purple-900 flex items-center gap-2">
-                            <span>{comm.icon || '🏛️'}</span> {comm.name}
-                          </h3>
-                          <p className="text-sm text-slate-600 mt-1">
-                            {comm.description || 'SnackVerse Gaming Community'}
-                          </p>
+                        <div className="flex items-center gap-3">
+                           <div className="w-12 h-12 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 text-white font-black flex items-center justify-center shadow">
+                              {comm.icon || '🏛️'}
+                           </div>
+                          <div>
+                            <h3 className="text-xl font-extrabold text-purple-900">
+                              {comm.name}
+                            </h3>
+                            <p className="text-sm text-slate-600 mt-1">
+                              Code: {code}
+                            </p>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            copyInviteCode(code);
-                          }}
-                          className="px-3 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-bold transition"
-                          title="Click to copy invite code"
-                        >
-                          Code: {code} 📋
-                        </button>
                       </div>
+                      <p className="text-slate-600 mt-4 text-sm">
+                        {comm.description || 'SnackVerse Gaming Community'}
+                      </p>
 
                       <div className="mt-4 pt-3 border-t border-purple-100 flex items-center justify-between text-xs font-semibold text-purple-800">
-                        <span>Click to open Leaderboard & Member Stats →</span>
-                        <span className="px-2.5 py-1 rounded-full bg-purple-100 text-purple-900">
-                          Open Hub
+                        <span className="text-slate-500">Created by {comm.creator_id === user?.id ? 'You' : 'Member'}</span>
+                        <span className="font-bold text-purple-900 cursor-pointer hover:underline">
+                          Open
                         </span>
                       </div>
                     </div>
@@ -414,157 +405,128 @@ export default function CommunitiesPage() {
             )}
           </div>
 
-          {/* Interactive Community Hub & Leaderboard Panel */}
+          {/* Selected Community Modal / View */}
           {selectedCommunity && (
-            <div className="clay-card p-6 md:p-8 border-2 border-amber-400 space-y-6 animate-fadeIn">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-purple-100 pb-4">
-                <div>
-                  <span className="text-xs font-bold uppercase tracking-wider text-amber-600">
-                    Community Hub & Leaderboard
-                  </span>
-                  <h2 className="text-2xl md:text-3xl font-black text-purple-900 mt-1">
-                    {selectedCommunity.icon || '🏛️'} {selectedCommunity.name}
-                  </h2>
-                  <p className="text-sm text-slate-600">
-                    {selectedCommunity.description || 'Compete with members and climb the ranks!'}
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <ClayButton
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      copyInviteCode(
-                        selectedCommunity.invite_code || selectedCommunity.code || 'SNACK1'
-                      )
-                    }
-                  >
-                    Copy Code: {selectedCommunity.invite_code || selectedCommunity.code || 'SNACK1'} 📋
-                  </ClayButton>
-                  <ClayButton
-                    type="button"
-                    variant="danger"
-                    size="sm"
-                    onClick={() => {
-                      setSelectedCommunity(null);
-                      setSelectedMember(null);
-                    }}
-                  >
-                    Close ✕
-                  </ClayButton>
-                </div>
-              </div>
-
-              {loadingMembers ? (
-                <p className="text-center py-6 text-slate-500">
-                  Loading community members and game stats...
-                </p>
-              ) : members.length === 0 ? (
-                <p className="text-center py-6 text-slate-500">No members found.</p>
-              ) : (
-                <div className="space-y-3">
-                  <p className="text-xs font-semibold text-slate-500 uppercase">
-                    Members ({members.length}) — Click any player to inspect their full stats
-                  </p>
-                  {members.map((m, idx) => (
-                    <div
-                      key={m.user_id}
-                      onClick={() => setSelectedMember(m)}
-                      className="p-4 rounded-2xl bg-white/80 hover:bg-white border border-purple-100 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer transition"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 text-white font-black flex items-center justify-center shadow">
-                          #{idx + 1}
-                        </div>
-                        <div>
-                          <p className="font-bold text-purple-900 flex items-center gap-2">
-                            {m.display_name}
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 font-semibold">
-                              @{m.username}
-                            </span>
-                            {m.role === 'admin' && (
-                              <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold">
-                                👑 Admin
-                              </span>
-                            )}
-                          </p>
-                          <p className="text-xs text-slate-500 mt-0.5">{m.bio}</p>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-4 text-center self-stretch sm:self-auto justify-around bg-purple-50/60 px-4 py-2 rounded-xl">
-                        <div>
-                          <p className="text-[10px] uppercase font-bold text-slate-500">Level</p>
-                          <p className="text-sm font-black text-purple-900">Lv. {m.level}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] uppercase font-bold text-slate-500">Total XP</p>
-                          <p className="text-sm font-black text-amber-600">{m.xp} XP</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] uppercase font-bold text-slate-500">
-                            Time Spent
-                          </p>
-                          <p className="text-sm font-black text-emerald-600">
-                            ⏱️ {formatDuration(m.total_seconds)}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] uppercase font-bold text-slate-500">Games</p>
-                          <p className="text-sm font-black text-indigo-600">{m.games_played}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Detailed Member Popup Card */}
-              {selectedMember && (
-                <div className="p-6 rounded-2xl bg-gradient-to-r from-amber-50 to-purple-50 border-2 border-purple-200 space-y-4">
-                  <div className="flex items-center justify-between">
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+               <div className="bg-white rounded-3xl p-6 md:p-8 w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl relative border border-purple-200">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-purple-100 pb-4 mb-6">
                     <div>
-                      <h3 className="text-xl font-black text-purple-900">
-                        {selectedMember.display_name} (@{selectedMember.username})
-                      </h3>
-                      <p className="text-xs text-slate-600">{selectedMember.bio}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedMember(null)}
-                      className="text-xs font-bold text-rose-600 hover:underline"
-                    >
-                      Close Player View
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-                    <div className="p-3 rounded-xl bg-white shadow-sm">
-                      <p className="text-xs text-slate-500">Player Level</p>
-                      <p className="text-xl font-black text-purple-900">
-                        Level {selectedMember.level}
+                      <span className="text-xs font-bold uppercase tracking-wider text-amber-600">
+                        Community Hub & Leaderboard
+                      </span>
+                      <h2 className="text-2xl md:text-3xl font-black text-purple-900 mt-1">
+                        {selectedCommunity.icon || '🏛️'} {selectedCommunity.name}
+                      </h2>
+                      <p className="text-sm text-slate-600">
+                        {selectedCommunity.description || 'Compete with members and climb the ranks!'}
                       </p>
                     </div>
-                    <div className="p-3 rounded-xl bg-white shadow-sm">
-                      <p className="text-xs text-slate-500">Total XP</p>
-                      <p className="text-xl font-black text-amber-600">{selectedMember.xp} XP</p>
-                    </div>
-                    <div className="p-3 rounded-xl bg-white shadow-sm">
-                      <p className="text-xs text-slate-500">Time Spent Playing</p>
-                      <p className="text-xl font-black text-emerald-600">
-                        {formatDuration(selectedMember.total_seconds)}
-                      </p>
-                    </div>
-                    <div className="p-3 rounded-xl bg-white shadow-sm">
-                      <p className="text-xs text-slate-500">Games & Best Score</p>
-                      <p className="text-xl font-black text-indigo-600">
-                        {selectedMember.games_played} ({selectedMember.top_score} pts)
-                      </p>
+
+                    <div className="flex items-center gap-3 shrink-0">
+                      <ClayButton
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() =>
+                          copyInviteCode(
+                            selectedCommunity.invite_code || selectedCommunity.code || 'SNACK1'
+                          )
+                        }
+                      >
+                        Copy Code: {selectedCommunity.invite_code || selectedCommunity.code || 'SNACK1'} 📋
+                      </ClayButton>
+                      <button
+                        onClick={() => {
+                          setSelectedCommunity(null);
+                          setSelectedMember(null);
+                        }}
+                        className="p-2 bg-rose-100 text-rose-700 rounded-xl hover:bg-rose-200 transition"
+                      >
+                        Close ✕
+                      </button>
                     </div>
                   </div>
-                </div>
-              )}
+
+                  {loadingMembers ? (
+                    <p className="text-center py-10 text-slate-500 font-semibold animate-pulse">
+                      Loading community members and game stats...
+                    </p>
+                  ) : members.length === 0 ? (
+                    <p className="text-center py-10 text-slate-500">No members found.</p>
+                  ) : (
+                    <div className="space-y-4">
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                        Members ({members.length}) — Click any player to inspect their full stats
+                      </p>
+                      {members.map((m, idx) => (
+                        <div
+                          key={m.user_id}
+                          onClick={() => setSelectedMember(selectedMember?.user_id === m.user_id ? null : m)}
+                          className="p-4 rounded-2xl bg-slate-50 hover:bg-white border border-slate-200 shadow-sm flex flex-col items-start gap-4 cursor-pointer transition"
+                        >
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between w-full gap-4">
+                              <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 text-white font-black flex items-center justify-center shadow text-xl">
+                                  #{idx + 1}
+                                </div>
+                                <div>
+                                  <p className="font-bold text-purple-900 text-lg flex items-center gap-2">
+                                    {m.display_name}
+                                    {m.role === 'admin' && (
+                                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold uppercase tracking-wide">
+                                        👑 Admin
+                                      </span>
+                                    )}
+                                  </p>
+                                  <p className="text-sm text-slate-500 font-medium">@{m.username}</p>
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-4 text-center sm:text-right bg-white px-5 py-3 rounded-xl border border-slate-100 shadow-sm w-full sm:w-auto">
+                                <div>
+                                  <p className="text-[10px] uppercase font-bold text-slate-400">Level</p>
+                                  <p className="text-base font-black text-purple-900">Lv. {m.level}</p>
+                                </div>
+                                <div className="w-px h-8 bg-slate-200 hidden sm:block"></div>
+                                <div>
+                                  <p className="text-[10px] uppercase font-bold text-slate-400">Total XP</p>
+                                  <p className="text-base font-black text-amber-600">{m.xp} XP</p>
+                                </div>
+                              </div>
+                          </div>
+                          
+                          {/* Expanded Member Details */}
+                          {selectedMember?.user_id === m.user_id && (
+                             <div className="w-full mt-2 pt-4 border-t border-slate-200 animate-fadeIn">
+                                 <p className="text-sm text-slate-600 italic mb-4">"{m.bio}"</p>
+                                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                                    <div className="p-3 rounded-xl bg-purple-50">
+                                      <p className="text-xs text-purple-600 font-semibold">Player Level</p>
+                                      <p className="text-lg font-black text-purple-900">Level {m.level}</p>
+                                    </div>
+                                    <div className="p-3 rounded-xl bg-amber-50">
+                                      <p className="text-xs text-amber-600 font-semibold">Total XP</p>
+                                      <p className="text-lg font-black text-amber-700">{m.xp} XP</p>
+                                    </div>
+                                    <div className="p-3 rounded-xl bg-emerald-50">
+                                      <p className="text-xs text-emerald-600 font-semibold">Time Playing</p>
+                                      <p className="text-lg font-black text-emerald-700">
+                                        {formatDuration(m.total_seconds)}
+                                      </p>
+                                    </div>
+                                    <div className="p-3 rounded-xl bg-indigo-50">
+                                      <p className="text-xs text-indigo-600 font-semibold">Games & Best</p>
+                                      <p className="text-lg font-black text-indigo-700">
+                                        {m.games_played} ({m.top_score} pts)
+                                      </p>
+                                    </div>
+                                  </div>
+                             </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+               </div>
             </div>
           )}
         </div>

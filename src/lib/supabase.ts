@@ -14,6 +14,13 @@ export const isSupabaseConfigured = Boolean(
     rawSupabaseKey.length > 20
 );
 
+// Exported for register.tsx & authStore.ts compatibility
+export const supabaseConfigured = true;
+
+export const supabaseConfigMessage = isSupabaseConfigured
+  ? ''
+  : 'Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in environment settings.';
+
 const supabaseUrl =
   rawSupabaseUrl && rawSupabaseUrl.startsWith('http')
     ? rawSupabaseUrl
@@ -33,16 +40,48 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   },
 });
 
-export function formatSupabaseAuthError(err: unknown): {
+/**
+ * Wraps any Supabase promise or Thenable query with a safety timeout
+ * Used across food, puzzle, profile, history, register, and authStore
+ */
+export async function withRequestTimeout<T>(
+  operation: PromiseLike<T> | Promise<T>,
+  timeoutMs = 15000,
+  timeoutMessage = 'Request timed out. Please check your internet connection and try again.'
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([Promise.resolve(operation), timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+export function formatSupabaseAuthError(
+  err: unknown,
+  fallbackMessage = 'An unexpected error occurred. Please try again.'
+): {
   code: string;
   userMessage: string;
+  message: string;
   isEmailVerificationRequired?: boolean;
   isRateLimit?: boolean;
 } {
   if (!err || typeof err !== 'object') {
+    const msg = typeof err === 'string' && err.trim() ? err : fallbackMessage;
     return {
       code: 'unknown_error',
-      userMessage: 'An unexpected error occurred. Please try again.',
+      userMessage: msg,
+      message: msg,
     };
   }
 
@@ -57,17 +96,27 @@ export function formatSupabaseAuthError(err: unknown): {
   const message = errorObj.message || '';
   const lowerMsg = message.toLowerCase();
 
+  const buildResult = (
+    resCode: string,
+    msg: string,
+    extra?: { isEmailVerificationRequired?: boolean; isRateLimit?: boolean }
+  ) => ({
+    code: resCode,
+    userMessage: msg,
+    message: msg,
+    ...extra,
+  });
+
   if (
     code === 'over_email_send_rate_limit' ||
     lowerMsg.includes('email rate limit exceeded') ||
     lowerMsg.includes('for security purposes, you can only request this')
   ) {
-    return {
-      code: 'over_email_send_rate_limit',
-      isRateLimit: true,
-      userMessage:
-        'Email limit reached. Please wait a bit before requesting another email.',
-    };
+    return buildResult(
+      'over_email_send_rate_limit',
+      'Email limit reached. Please wait a bit before requesting another email.',
+      { isRateLimit: true }
+    );
   }
 
   if (
@@ -75,63 +124,61 @@ export function formatSupabaseAuthError(err: unknown): {
     lowerMsg.includes('user already registered') ||
     lowerMsg.includes('already been registered')
   ) {
-    return {
-      code: 'user_already_exists',
-      userMessage: 'This email is already registered. Please log in instead.',
-    };
+    return buildResult(
+      'user_already_exists',
+      'This email is already registered. Please log in instead.'
+    );
   }
 
   if (
     code === 'email_not_confirmed' ||
     lowerMsg.includes('email not confirmed')
   ) {
-    return {
-      code: 'email_not_confirmed',
-      isEmailVerificationRequired: true,
-      userMessage:
-        'Your email is not verified yet. Please check your inbox and click the confirmation link.',
-    };
+    return buildResult(
+      'email_not_confirmed',
+      'Your email is not verified yet. Please check your inbox and click the confirmation link.',
+      { isEmailVerificationRequired: true }
+    );
   }
 
   if (
     code === 'invalid_credentials' ||
     lowerMsg.includes('invalid login credentials')
   ) {
-    return {
-      code: 'invalid_credentials',
-      userMessage: 'Invalid email or password. Please check your credentials.',
-    };
+    return buildResult(
+      'invalid_credentials',
+      'Invalid email or password. Please check your credentials.'
+    );
   }
 
   if (status === 429 || code === 'over_request_rate_limit') {
-    return {
-      code: 'over_request_rate_limit',
-      isRateLimit: true,
-      userMessage: 'Too many requests. Please wait a minute and try again.',
-    };
+    return buildResult(
+      'over_request_rate_limit',
+      'Too many requests. Please wait a minute and try again.',
+      { isRateLimit: true }
+    );
   }
 
   if (status === 502 || lowerMsg.includes('502') || lowerMsg.includes('bad gateway')) {
-    return {
-      code: 'http_502_bad_gateway',
-      userMessage:
-        'Server gateway error (HTTP 502). Please wait a moment and try again.',
-    };
+    return buildResult(
+      'http_502_bad_gateway',
+      'Server gateway error (HTTP 502). Please wait a moment and try again.'
+    );
   }
 
   if (code === '23505' || lowerMsg.includes('duplicate key')) {
-    return {
-      code: 'duplicate_key',
-      userMessage: 'This record or username already exists.',
-    };
+    return buildResult(
+      'duplicate_key',
+      'This record or username already exists.'
+    );
   }
 
-  return {
-    code: code || 'auth_error',
-    userMessage: message || 'Operation failed. Please try again.',
-  };
+  return buildResult(code || 'auth_error', message || fallbackMessage);
 }
 
-export function formatSupabaseError(err: unknown): string {
-  return formatSupabaseAuthError(err).userMessage;
+export function formatSupabaseError(
+  err: unknown,
+  fallbackMessage?: string
+): string {
+  return formatSupabaseAuthError(err, fallbackMessage).userMessage;
 }
